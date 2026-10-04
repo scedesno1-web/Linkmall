@@ -82,6 +82,12 @@ const rid = (n = 6) => crypto.randomBytes(n).toString('base64url');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const won = (n) => Number(n).toLocaleString('ko-KR') + '원';
 
+// ---------- 토스페이먼츠 (키가 없으면 기존 테스트 결제 유지) ----------
+const TOSS_CK = (process.env.TOSS_CLIENT_KEY || '').trim();
+const TOSS_SK = (process.env.TOSS_SECRET_KEY || '').trim();
+const useToss = !!(TOSS_CK && TOSS_SK);
+const js = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
+
 const css = `
 *{box-sizing:border-box}body{margin:0;font-family:-apple-system,"Noto Sans KR",sans-serif;background:#f5f6f8;color:#1b1d21}
 .w{max-width:520px;margin:0 auto;padding:20px 16px 60px}h1{font-size:22px;margin:8px 0 4px}h2{font-size:17px;margin:24px 0 8px}
@@ -93,6 +99,32 @@ textarea{min-height:90px}button,.btn{display:inline-block;background:#4f46e5;col
 a{color:#4f46e5}.warn{background:#fff7ed;color:#9a3412;border-radius:10px;padding:10px;font-size:13px}
 `;
 const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${css}</style></head><body><div class="w">${body}</div></body></html>`;
+
+const payBlock = (item) => {
+  if (!useToss) return `<div class="lock">🔒 결제하면 바로 잠금이 풀려요</div><br>
+<form method="post" action="/i/${item.id}/pay"><button>${won(item.price)} 결제하고 열기 (테스트)</button></form>
+<p class="sub">테스트 모드: 실제 결제 없이 버튼만 누르면 결제 완료로 처리됩니다.</p>`;
+  const orderId = item.id + rid(10); // 앞 12자 = 아이템 ID, 뒤 14자 = 랜덤 (총 26자)
+  return `<div class="lock">🔒 결제하면 바로 잠금이 풀려요</div><br>
+<button id="payBtn">${won(item.price)} 결제하고 열기</button><p class="sub" id="payMsg"></p>
+<script src="https://js.tosspayments.com/v2/standard"></script>
+<script>
+document.getElementById('payBtn').onclick = async () => {
+  try {
+    const tp = TossPayments(${js(TOSS_CK)});
+    const payment = tp.payment({ customerKey: TossPayments.ANONYMOUS });
+    await payment.requestPayment({
+      method: 'CARD',
+      amount: { currency: 'KRW', value: ${Number(item.price)} },
+      orderId: ${js(orderId)},
+      orderName: ${js(String(item.title).slice(0, 100))},
+      successUrl: ${js(BASE + '/pay/success')},
+      failUrl: ${js(BASE + '/pay/fail')}
+    });
+  } catch (e) { document.getElementById('payMsg').textContent = '결제가 취소되었거나 열 수 없어요.'; }
+};
+</script>`;
+};
 
 const send = (res, code, html, headers = {}) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', ...headers }); res.end(html); };
 const redirect = (res, to) => { res.writeHead(303, { Location: to }); res.end(); };
@@ -219,19 +251,48 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
 <h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건</p>
 <div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
-<div class="lock">🔒 결제하면 바로 잠금이 풀려요</div><br>
-<form method="post" action="/i/${item.id}/pay"><button>${won(item.price)} 결제하고 열기 (테스트)</button></form>
-<p class="sub">테스트 모드: 실제 결제 없이 버튼만 누르면 결제 완료로 처리됩니다.</p>`));
+${payBlock(item)}`));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
 route('POST', /^\/i\/([\w-]+)\/pay$/, async (req, res, m) => {
+  if (useToss) return send(res, 403, page('막힘', '<h1>테스트 결제는 꺼져 있어요</h1>'));
   const item = await store.itemById(m[1]);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const order = { token: rid(16), item: item.id, price: item.price, paidAt: Date.now() };
   await store.createOrder(order);
   await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`);
   redirect(res, `/o/${order.token}`);
+});
+
+route('GET', /^\/pay\/success$/, async (req, res) => {
+  const q = new URL(req.url, BASE).searchParams;
+  const paymentKey = q.get('paymentKey');
+  const orderId = q.get('orderId');
+  if (!useToss || !paymentKey || !orderId || orderId.length !== 26) return send(res, 400, page('오류', '<h1>잘못된 결제 요청이에요</h1>'));
+  if (await store.orderByToken(orderId)) return redirect(res, `/o/${orderId}`); // 새로고침 대비
+  const item = await store.itemById(orderId.slice(0, 12));
+  if (!item) return send(res, 404, page('오류', '<h1>아이템을 찾을 수 없어요</h1>'));
+  // 금액은 URL이 아니라 DB의 가격으로 승인 요청 (토스가 실제 결제액과 대조)
+  const r = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(TOSS_SK + ':').toString('base64'), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paymentKey, orderId, amount: Number(item.price) }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (await store.orderByToken(orderId)) return redirect(res, `/o/${orderId}`);
+    return send(res, 400, page('결제 실패', `<h1>결제 승인에 실패했어요</h1><p>${esc(d.message || '')}</p><p><a href="/i/${item.id}">다시 시도</a></p>`));
+  }
+  const order = { token: orderId, item: item.id, price: Number(item.price), paidAt: Date.now() };
+  await store.createOrder(order);
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`);
+  redirect(res, `/o/${orderId}`);
+});
+
+route('GET', /^\/pay\/fail$/, (req, res) => {
+  const q = new URL(req.url, BASE).searchParams;
+  send(res, 200, page('결제 실패', `<h1>결제가 완료되지 않았어요</h1><p class="sub">${esc(q.get('message') || '')}</p><p><a href="javascript:history.go(-2)">돌아가기</a></p>`));
 });
 
 route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
