@@ -1,16 +1,70 @@
-// 링크몰 MVP 프로토타입 (의존성 없음, Node 18+)
+// 링크몰 (의존성 없음, Node 18+)
 // 실행: node server.js  →  http://localhost:3000
+// 저장소: SUPABASE_URL + SUPABASE_KEY 가 있으면 Supabase, 없으면 db.json 파일
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-const BASE = process.env.BASE_URL || `http://localhost:${PORT}`;
-const DB = path.join(__dirname, 'db.json');
+const BASE = (process.env.BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 
+// ---------- 저장소 ----------
+const SB_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+const SB_KEY = (process.env.SUPABASE_KEY || '').trim();
+const useSB = !!(SB_URL && SB_KEY);
+const enc = encodeURIComponent;
+
+const sbHeaders = (extra) => {
+  const h = { apikey: SB_KEY, 'Content-Type': 'application/json', ...extra };
+  if (SB_KEY.startsWith('eyJ')) h.Authorization = 'Bearer ' + SB_KEY; // 예전 방식(JWT) 키일 때만
+  return h;
+};
+async function sbGet(table, query) {
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, { headers: sbHeaders() });
+  if (!r.ok) throw new Error(`supabase GET ${table} ${r.status} ${await r.text()}`);
+  return r.json();
+}
+async function sbInsert(table, row) {
+  const r = await fetch(`${SB_URL}/rest/v1/${table}`, { method: 'POST', headers: sbHeaders({ Prefer: 'return=minimal' }), body: JSON.stringify(row) });
+  if (!r.ok) throw new Error(`supabase INSERT ${table} ${r.status} ${await r.text()}`);
+}
+
+const sbStore = {
+  async createShop(s) { await sbInsert('shops', s); },
+  async shopById(id) { return (await sbGet('shops', `id=eq.${enc(id)}&select=*`))[0]; },
+  async shopByKey(key) { return (await sbGet('shops', `key=eq.${enc(key)}&select=*`))[0]; },
+  async createItem(i) { await sbInsert('items', i); },
+  async itemById(id) { return (await sbGet('items', `id=eq.${enc(id)}&select=*`))[0]; },
+  async itemsByShop(shopId) { return sbGet('items', `shop=eq.${enc(shopId)}&select=*&order=created.desc`); },
+  async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt }); },
+  async orderByToken(t) {
+    const o = (await sbGet('orders', `token=eq.${enc(t)}&select=*`))[0];
+    return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at };
+  },
+  async ordersForItems(ids) {
+    if (!ids.length) return [];
+    return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at }));
+  },
+};
+
+const DB = path.join(__dirname, 'db.json');
 const load = () => { try { return JSON.parse(fs.readFileSync(DB, 'utf8')); } catch { return { shops: {}, items: {}, orders: {} }; } };
 const save = (d) => fs.writeFileSync(DB, JSON.stringify(d, null, 2));
+const fileStore = {
+  async createShop(s) { const d = load(); d.shops[s.id] = s; save(d); },
+  async shopById(id) { return load().shops[id]; },
+  async shopByKey(key) { return Object.values(load().shops).find((s) => s.key === key); },
+  async createItem(i) { const d = load(); d.items[i.id] = i; save(d); },
+  async itemById(id) { return load().items[id]; },
+  async itemsByShop(shopId) { return Object.values(load().items).filter((i) => i.shop === shopId).sort((a, b) => b.created - a.created); },
+  async createOrder(o) { const d = load(); d.orders[o.token] = o; save(d); },
+  async orderByToken(t) { return load().orders[t]; },
+  async ordersForItems(ids) { return Object.values(load().orders).filter((o) => ids.includes(o.item)); },
+};
+const store = useSB ? sbStore : fileStore;
+
+// ---------- 공통 ----------
 const rid = (n = 6) => crypto.randomBytes(n).toString('base64url');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const won = (n) => Number(n).toLocaleString('ko-KR') + '원';
@@ -35,12 +89,14 @@ const readForm = (req) => new Promise((resolve) => {
 });
 
 async function notify(shop, text) {
-  if (!shop.webhook || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(shop.webhook)) return;
+  if (!shop || !shop.webhook || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(shop.webhook)) return;
   try { await fetch(shop.webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) }); } catch (e) { console.error('webhook 실패', e.message); }
 }
 
+// ---------- 라우트 ----------
 const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
+const notFound = (res, msg) => send(res, 404, page('없음', `<h1>${msg}</h1>`));
 
 route('GET', /^\/$/, (req, res) => send(res, 200, page('링크몰', `
 <h1>🔗 링크몰</h1><p class="sub">링크 하나로 팔고, 결제되면 자동으로 열려요.</p>
@@ -51,18 +107,17 @@ route('GET', /^\/$/, (req, res) => send(res, 200, page('링크몰', `
 <p class="warn">⚠️ 테스트 결제 모드입니다. 실제 돈이 오가지 않아요.</p>`)));
 
 route('POST', /^\/shops$/, async (req, res) => {
-  const f = await readForm(req); const d = load();
+  const f = await readForm(req);
   const shop = { id: rid(4), key: rid(12), name: String(f.name || '').slice(0, 40), webhook: (f.webhook || '').trim(), created: Date.now() };
-  d.shops[shop.id] = shop; save(d); redirect(res, `/m/${shop.key}`);
+  await store.createShop(shop);
+  redirect(res, `/m/${shop.key}`);
 });
 
-const byKey = (d, key) => Object.values(d.shops).find((s) => s.key === key);
-
-route('GET', /^\/m\/([\w-]+)$/, (req, res, m) => {
-  const d = load(); const shop = byKey(d, m[1]);
-  if (!shop) return send(res, 404, page('없음', '<h1>상점을 찾을 수 없어요</h1>'));
-  const items = Object.values(d.items).filter((i) => i.shop === shop.id);
-  const orders = Object.values(d.orders).filter((o) => items.some((i) => i.id === o.item));
+route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const items = await store.itemsByShop(shop.id);
+  const orders = await store.ordersForItems(items.map((i) => i.id));
   const total = orders.reduce((s, o) => s + o.price, 0);
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
@@ -82,28 +137,29 @@ ${items.map((i) => `<div class="card"><b>${esc(i.title)}</b> <span class="price"
 });
 
 route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
-  const d = load(); const shop = byKey(d, m[1]);
-  if (!shop) return send(res, 404, page('없음', '<h1>상점 없음</h1>'));
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
   const f = await readForm(req);
   const price = parseInt(f.price, 10);
   if (!(price >= 100)) return send(res, 400, page('오류', '<h1>가격은 100원 이상이어야 해요</h1>'));
-  const item = { id: rid(9), pub: f.pub === 'on', shop: shop.id, title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000), created: Date.now() };
-  d.items[item.id] = item; save(d); redirect(res, `/m/${shop.key}`);
+  const item = { id: rid(9), shop: shop.id, pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000), created: Date.now() };
+  await store.createItem(item);
+  redirect(res, `/m/${shop.key}`);
 });
 
-route('GET', /^\/s\/([\w-]+)$/, (req, res, m) => {
-  const d = load(); const shop = d.shops[m[1]];
-  if (!shop) return send(res, 404, page('없음', '<h1>상점을 찾을 수 없어요</h1>'));
-  const items = Object.values(d.items).filter((i) => i.shop === shop.id);
+route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
   send(res, 200, page(shop.name, `<h1>${esc(shop.name)}</h1><p class="sub">링크몰 상점</p>
-${items.filter((i) => i.pub).map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span></div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
+${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span></div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
 });
 
-route('GET', /^\/i\/([\w-]+)$/, (req, res, m) => {
-  const d = load(); const item = d.items[m[1]];
-  if (!item) return send(res, 404, page('없음', '<h1>아이템을 찾을 수 없어요</h1>'));
-  const shop = d.shops[item.shop];
-  const sold = Object.values(d.orders).filter((o) => o.item === item.id).length;
+route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
+  const item = await store.itemById(m[1]);
+  if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const shop = await store.shopById(item.shop);
+  const sold = (await store.ordersForItems([item.id])).length;
   send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
 <h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건</p>
 <div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
@@ -114,18 +170,18 @@ route('GET', /^\/i\/([\w-]+)$/, (req, res, m) => {
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
 route('POST', /^\/i\/([\w-]+)\/pay$/, async (req, res, m) => {
-  const d = load(); const item = d.items[m[1]];
-  if (!item) return send(res, 404, page('없음', '<h1>아이템 없음</h1>'));
+  const item = await store.itemById(m[1]);
+  if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const order = { token: rid(16), item: item.id, price: item.price, paidAt: Date.now() };
-  d.orders[order.token] = order; save(d);
-  await notify(d.shops[item.shop], `💰 새 주문! ${item.title} (${won(item.price)})`);
+  await store.createOrder(order);
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`);
   redirect(res, `/o/${order.token}`);
 });
 
-route('GET', /^\/o\/([\w-]+)$/, (req, res, m) => {
-  const d = load(); const order = d.orders[m[1]];
-  if (!order) return send(res, 404, page('없음', '<h1>주문을 찾을 수 없어요</h1>'));
-  const item = d.items[order.item];
+route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
+  const order = await store.orderByToken(m[1]);
+  if (!order) return notFound(res, '주문을 찾을 수 없어요');
+  const item = await store.itemById(order.item);
   send(res, 200, page('내 보관함', `<h1>🔓 잠금 해제됨</h1><h2>${esc(item.title)}</h2>
 <div class="secret">${esc(item.secret)}</div>
 <p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>`));
@@ -139,5 +195,5 @@ http.createServer(async (req, res) => {
       try { return await r.fn(req, res, m); } catch (e) { console.error(e); return send(res, 500, page('오류', '<h1>문제가 생겼어요</h1>')); }
     }
   }
-  send(res, 404, page('없음', '<h1>페이지를 찾을 수 없어요</h1>'));
-}).listen(PORT, () => console.log(`링크몰 실행 중 → ${BASE}`));
+  notFound(res, '페이지를 찾을 수 없어요');
+}).listen(PORT, () => console.log(`링크몰 실행 중 → ${BASE} (저장소: ${useSB ? 'Supabase' : 'db.json 파일'})`));
