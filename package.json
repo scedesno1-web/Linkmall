@@ -1,0 +1,9 @@
+{
+  "name": "linkmall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "링크 하나로 팔고, 결제되면 자동으로 열리는 링크몰",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
