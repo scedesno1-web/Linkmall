@@ -30,12 +30,23 @@ async function sbInsert(table, row) {
   if (!r.ok) throw new Error(`supabase INSERT ${table} ${r.status} ${await r.text()}`);
 }
 
+async function sbPatch(table, query, row) {
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=minimal' }), body: JSON.stringify(row) });
+  if (!r.ok) throw new Error(`supabase PATCH ${table} ${r.status} ${await r.text()}`);
+}
+async function sbDelete(table, query) {
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, { method: 'DELETE', headers: sbHeaders({ Prefer: 'return=minimal' }) });
+  if (!r.ok) throw new Error(`supabase DELETE ${table} ${r.status} ${await r.text()}`);
+}
+
 const sbStore = {
   async createShop(s) { await sbInsert('shops', s); },
   async shopById(id) { return (await sbGet('shops', `id=eq.${enc(id)}&select=*`))[0]; },
   async shopByKey(key) { return (await sbGet('shops', `key=eq.${enc(key)}&select=*`))[0]; },
   async createItem(i) { await sbInsert('items', i); },
   async itemById(id) { return (await sbGet('items', `id=eq.${enc(id)}&select=*`))[0]; },
+  async updateItem(id, f) { await sbPatch('items', `id=eq.${enc(id)}`, f); },
+  async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
   async itemsByShop(shopId) { return sbGet('items', `shop=eq.${enc(shopId)}&select=*&order=created.desc`); },
   async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt }); },
   async orderByToken(t) {
@@ -57,6 +68,8 @@ const fileStore = {
   async shopByKey(key) { return Object.values(load().shops).find((s) => s.key === key); },
   async createItem(i) { const d = load(); d.items[i.id] = i; save(d); },
   async itemById(id) { return load().items[id]; },
+  async updateItem(id, f) { const d = load(); if (d.items[id]) Object.assign(d.items[id], f); save(d); },
+  async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
   async itemsByShop(shopId) { return Object.values(load().items).filter((i) => i.shop === shopId).sort((a, b) => b.created - a.created); },
   async createOrder(o) { const d = load(); d.orders[o.token] = o; save(d); },
   async orderByToken(t) { return load().orders[t]; },
@@ -133,7 +146,7 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" checked style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>등록</button></form>
 <h2>내 아이템</h2>
-${items.map((i) => `<div class="card"><b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
+${items.map((i) => `<div class="card"><b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a><br><a href="/m/${shop.key}/items/${i.id}/edit">✏️ 수정·삭제</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
 });
 
 route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
@@ -144,6 +157,49 @@ route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
   if (!(price >= 100)) return send(res, 400, page('오류', '<h1>가격은 100원 이상이어야 해요</h1>'));
   const item = { id: rid(9), shop: shop.id, pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000), created: Date.now() };
   await store.createItem(item);
+  redirect(res, `/m/${shop.key}`);
+});
+
+route('GET', /^\/m\/([\w-]+)\/items\/([\w-]+)\/edit$/, async (req, res, m) => {
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const item = await store.itemById(m[2]);
+  if (!item || item.shop !== shop.id) return notFound(res, '아이템을 찾을 수 없어요');
+  const sold = (await store.ordersForItems([item.id])).length;
+  send(res, 200, page('아이템 수정', `<a class="sub" href="/m/${shop.key}">← 관리로 돌아가기</a>
+<h1>아이템 수정</h1>
+${sold ? `<p class="warn">이미 ${sold}건 팔렸어요. 가격을 바꿔도 이전 주문 금액은 그대로이고, 잠금 정보를 바꾸면 이전 구매자에게도 바뀐 내용이 보여요.</p>` : ''}
+<form class="card" method="post" action="/m/${shop.key}/items/${item.id}">
+<input name="title" value="${esc(item.title)}" required maxlength="80">
+<input name="price" type="number" min="100" step="100" value="${esc(item.price)}" required>
+<textarea name="preview" required>${esc(item.preview)}</textarea>
+<textarea name="secret" required>${esc(item.secret)}</textarea>
+<label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" ${item.pub ? 'checked' : ''} style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
+<button>저장</button></form>
+<h2>삭제</h2>
+${sold ? '<p class="sub">판매 기록이 있는 아이템은 삭제할 수 없어요. 구매자가 계속 열람해야 하니까요. 대신 위에서 공개를 꺼서 목록에서 숨기세요.</p>'
+ : `<form method="post" action="/m/${shop.key}/items/${item.id}/delete" onsubmit="return confirm('정말 삭제할까요? 되돌릴 수 없어요.')"><button style="background:#dc2626">이 아이템 삭제</button></form>`}`));
+});
+
+route('POST', /^\/m\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m) => {
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const item = await store.itemById(m[2]);
+  if (!item || item.shop !== shop.id) return notFound(res, '아이템을 찾을 수 없어요');
+  const f = await readForm(req);
+  const price = parseInt(f.price, 10);
+  if (!(price >= 100)) return send(res, 400, page('오류', '<h1>가격은 100원 이상이어야 해요</h1>'));
+  await store.updateItem(item.id, { pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000) });
+  redirect(res, `/m/${shop.key}`);
+});
+
+route('POST', /^\/m\/([\w-]+)\/items\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const item = await store.itemById(m[2]);
+  if (!item || item.shop !== shop.id) return notFound(res, '아이템을 찾을 수 없어요');
+  if ((await store.ordersForItems([item.id])).length) return send(res, 400, page('삭제 불가', `<h1>판매 기록이 있어 삭제할 수 없어요</h1><p><a href="/m/${shop.key}/items/${item.id}/edit">돌아가기</a></p>`));
+  await store.deleteItem(item.id);
   redirect(res, `/m/${shop.key}`);
 });
 
