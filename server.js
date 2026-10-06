@@ -202,6 +202,52 @@ const fails = new Map();
 const locked = (k) => { const f = fails.get(k); return !!f && f.n >= 8 && Date.now() - f.t < 15 * 60000; };
 const addFail = (k) => { const f = fails.get(k); fails.set(k, { n: (f && Date.now() - f.t < 15 * 60000 ? f.n : 0) + 1, t: Date.now() }); };
 
+// ---------- 이메일 인증 코드 (가입 때만, Brevo HTTP API) ----------
+const BREVO_KEY = (process.env.BREVO_API_KEY || '').trim();
+const MAIL_FROM = (process.env.MAIL_FROM || '').trim();
+const MAIL_SCRIPT_URL = (process.env.MAIL_SCRIPT_URL || '').trim();       // 구글 앱스 스크립트 웹앱 주소 (선택)
+const MAIL_SCRIPT_SECRET = (process.env.MAIL_SCRIPT_SECRET || '').trim(); // 스크립트와 맞춘 비밀 문자열
+const useScript = !!(MAIL_SCRIPT_URL && MAIL_SCRIPT_SECRET);
+const useMail = useScript || !!(BREVO_KEY && MAIL_FROM);
+const MAIL_DAILY = useScript ? 90 : 250; // 앱스 스크립트(일반 Gmail)는 하루 수신자 100명 한도
+const EMAIL_RE = /^[^\s@|]+@[^\s@|]+\.[^\s@|]+$/;
+const sends = new Map();
+const sendOk = (k, max, ms) => { const now = Date.now(); const a = (sends.get(k) || []).filter((t) => now - t < ms); if (a.length >= max) { sends.set(k, a); return false; } a.push(now); sends.set(k, a); return true; };
+setInterval(() => { const now = Date.now(); for (const [k, a] of sends) if (!a.length || now - a[a.length - 1] > 86400000) sends.delete(k); for (const [k, f] of fails) if (now - f.t > 900000) fails.delete(k); }, 600000).unref();
+const codeHash = (email, code) => crypto.createHmac('sha256', SESSION_SECRET).update('code:' + email + ':' + code).digest('base64url');
+const mkToken = (email, code) => { const p = Buffer.from(JSON.stringify({ e: email, x: Date.now() + 10 * 60000, c: codeHash(email, code) })).toString('base64url'); return p + '.' + sign(p); };
+const readToken = (t) => {
+  const [p, sg] = String(t || '').split('.');
+  if (!p || !sg) return null;
+  const good = sign(p);
+  if (sg.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sg), Buffer.from(good))) return null;
+  try { const o = JSON.parse(Buffer.from(p, 'base64url').toString()); return o.x > Date.now() ? o : null; } catch { return null; }
+};
+async function sendMail(to, subject, html) {
+  try {
+    if (useScript) {
+      const r = await fetch(MAIL_SCRIPT_URL, { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ secret: MAIL_SCRIPT_SECRET, to, subject, html }) });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d || !d.ok) { console.error('script 메일 실패', r.status); return false; }
+      return true;
+    }
+    const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'api-key': BREVO_KEY, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ sender: { name: '링크몰', email: MAIL_FROM }, to: [{ email: to }], subject, htmlContent: html }),
+    });
+    if (!r.ok) { console.error('mail 실패', r.status, (await r.text()).slice(0, 200)); return false; }
+    return true;
+  } catch (e) { console.error('mail 오류', e.message); return false; }
+}
+const verifyPage = (res, t, next, email, err) => send(res, 200, page('인증 코드', `<h1>📧 인증 코드 입력</h1>
+<p class="sub">${esc(email)} 로 6자리 코드를 보냈어요. 10분 안에 입력하세요. 안 오면 스팸함도 확인해 보세요.</p>${err ? `<p class="warn">${esc(err)}</p>` : ''}
+<form class="card" method="post" action="/signup/verify"><input type="hidden" name="t" value="${esc(t)}"><input type="hidden" name="next" value="${esc(next)}">
+<input name="code" placeholder="인증 코드 6자리" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+<input name="pw" type="password" placeholder="사용할 비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
+<button>가입 완료</button></form>
+<p class="sub"><a href="/login?next=${enc(next)}">처음부터 다시</a></p>`));
+
 // 관리 권한: 주인이 있는 상점은 로그인한 주인만, 주인이 없는 옛 상점은 관리 주소만으로
 async function manageShop(req, res, key) {
   const shop = await store.shopByKey(key);
@@ -278,19 +324,62 @@ route('GET', /^\/login$/, async (req, res) => {
   const q = new URL(req.url, BASE).searchParams;
   const next = safeNext(q.get('next'));
   const err = q.get('e');
+  const signup = useMail
+    ? `<form class="card" method="post" action="/signup/start"><b>처음이면 가입</b><input type="hidden" name="next" value="${esc(next)}">
+<input name="email" type="email" placeholder="이메일" autocomplete="username" required maxlength="100">
+<button>인증 코드 받기</button><p class="sub">이메일로 6자리 코드를 보내드려요.</p></form>`
+    : `<form class="card" method="post" action="/signup"><b>처음이면 가입</b><input type="hidden" name="next" value="${esc(next)}">
+<input name="email" placeholder="이메일" autocomplete="username" required maxlength="100">
+<input name="pw" type="password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
+<button>가입하기</button></form>`;
   send(res, 200, page('로그인', `<h1>🔗 로그인</h1>${err ? `<p class="warn">${esc(err)}</p>` : ''}
 <form class="card" method="post" action="/login"><b>로그인</b><input type="hidden" name="next" value="${esc(next)}">
 <input name="email" placeholder="이메일" autocomplete="username" required maxlength="100">
 <input name="pw" type="password" placeholder="비밀번호" autocomplete="current-password" required maxlength="100">
 <button>로그인</button></form>
-<form class="card" method="post" action="/signup"><b>처음이면 가입</b><input type="hidden" name="next" value="${esc(next)}">
-<input name="email" placeholder="이메일" autocomplete="username" required maxlength="100">
-<input name="pw" type="password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
-<button>가입하기</button></form>`));
+${signup}`));
+});
+
+route('POST', /^\/signup\/start$/, async (req, res) => {
+  const f = await readForm(req);
+  const next = safeNext(f.next);
+  const back = (e) => redirect(res, `/login?e=${enc(e)}&next=${enc(next)}`);
+  if (!useMail) return back('이메일 인증이 설정되지 않았어요');
+  const email = str(f.email, 100).toLowerCase();
+  if (!EMAIL_RE.test(email)) return back('이메일 형식이 아니에요');
+  if (await store.userByEmail(email)) return back('이미 가입된 이메일이에요');
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (!sendOk('e:' + email, 1, 60000)) return back('1분 뒤에 다시 요청해 주세요');
+  if (!sendOk('ip:' + ip, 20, 3600000) || !sendOk('all', MAIL_DAILY, 86400000)) return back('요청이 너무 많아요. 잠시 뒤에 다시 해주세요');
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const ok = await sendMail(email, `[링크몰] 인증 코드 ${code}`, `<div style="font-family:sans-serif"><p>링크몰 가입 인증 코드예요.</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>10분 안에 입력해 주세요. 본인이 요청하지 않았다면 무시하세요.</p></div>`);
+  if (!ok) return back('메일을 보내지 못했어요. 잠시 뒤에 다시 해주세요');
+  verifyPage(res, mkToken(email, code), next, email, '');
+});
+
+route('POST', /^\/signup\/verify$/, async (req, res) => {
+  const f = await readForm(req);
+  const next = safeNext(f.next);
+  const tok = readToken(f.t);
+  if (!tok) return redirect(res, `/login?e=${enc('인증 시간이 지났어요. 다시 시도해 주세요')}&next=${enc(next)}`);
+  const key = 'v:' + tok.e;
+  const again = (e) => verifyPage(res, f.t, next, tok.e, e);
+  if (locked(key)) return again('시도가 너무 많아요. 15분 뒤에 다시 해주세요');
+  const a = Buffer.from(codeHash(tok.e, str(f.code, 6)));
+  const b = Buffer.from(tok.c);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) { addFail(key); return again('코드가 맞지 않아요'); }
+  const pw = String(f.pw || '');
+  if (pw.length < 8 || pw.length > 100) return again('비밀번호는 8자 이상이어야 해요');
+  if (await store.userByEmail(tok.e)) return redirect(res, `/login?e=${enc('이미 가입된 이메일이에요')}&next=${enc(next)}`);
+  const user = { id: rid(9), email: tok.e, pw: hashPw(pw), created: Date.now() };
+  await store.createUser(user);
+  fails.delete(key);
+  redirect(res, next, { 'Set-Cookie': sessionCookie(user.id) });
 });
 
 route('POST', /^\/signup$/, async (req, res) => {
   const f = await readForm(req);
+  if (useMail) return redirect(res, `/login?e=${enc('이메일 인증으로 가입해 주세요')}&next=${enc(safeNext(f.next))}`);
   const email = str(f.email, 100).toLowerCase();
   const pw = String(f.pw || '');
   const back = (e) => redirect(res, `/login?e=${enc(e)}&next=${enc(safeNext(f.next))}`);
