@@ -57,15 +57,30 @@ const sbStore = {
   async itemById(id) { return (await sbGet('items', `id=eq.${enc(id)}&select=*`))[0]; },
   async updateItem(id, f) { await sbPatch('items', `id=eq.${enc(id)}`, f); },
   async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
+  async updateUser(id, f) { await sbPatch('users', `id=eq.${enc(id)}`, f); },
+  // 재고 한 줄 꺼내기: stock_ver가 그대로일 때만 갱신(동시에 두 명이 같은 줄을 가져가는 걸 막음)
+  async popStock(itemId) {
+    for (let n = 0; n < 8; n++) {
+      const it = await sbStore.itemById(itemId);
+      if (!it || it.stock == null) return null;
+      const lines = stockLines(it.stock);
+      if (!lines.length) return null;
+      const ver = it.stock_ver || 0;
+      const r = await fetch(`${SB_URL}/rest/v1/items?id=eq.${enc(itemId)}&stock_ver=eq.${ver}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ stock: lines.slice(1).join('\n'), stock_ver: ver + 1 }) });
+      if (!r.ok) throw new Error(`supabase popStock ${r.status} ${await r.text()}`);
+      if ((await r.json()).length) return lines[0];
+    }
+    return null;
+  },
   async itemsByShop(shopId) { return sbGet('items', `shop=eq.${enc(shopId)}&select=*&order=created.desc`); },
-  async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt }); },
+  async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt, ...(o.delivered != null ? { delivered: o.delivered } : {}) }); },
   async orderByToken(t) {
     const o = (await sbGet('orders', `token=eq.${enc(t)}&select=*`))[0];
-    return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at };
+    return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered };
   },
   async ordersForItems(ids) {
     if (!ids.length) return [];
-    return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at }));
+    return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered }));
   },
 };
 
@@ -91,11 +106,23 @@ const fileStore = {
   async itemById(id) { return load().items[id]; },
   async updateItem(id, f) { const d = load(); if (d.items[id]) Object.assign(d.items[id], f); save(d); },
   async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
+  async updateUser(id, f) { const d = L(); if (d.users[id]) Object.assign(d.users[id], f); save(d); },
+  async popStock(itemId) {
+    const d = load(); const it = d.items[itemId];
+    if (!it || it.stock == null) return null;
+    const lines = stockLines(it.stock);
+    if (!lines.length) return null;
+    it.stock = lines.slice(1).join('\n'); save(d);
+    return lines[0];
+  },
   async itemsByShop(shopId) { return Object.values(load().items).filter((i) => i.shop === shopId).sort((a, b) => b.created - a.created); },
   async createOrder(o) { const d = load(); d.orders[o.token] = o; save(d); },
   async orderByToken(t) { return load().orders[t]; },
   async ordersForItems(ids) { return Object.values(load().orders).filter((o) => ids.includes(o.item)); },
 };
+// 재고: 줄바꿈으로 한 줄에 하나. 빈 줄은 무시
+const stockLines = (t) => String(t == null ? '' : t).split('\n').map((x) => x.trim()).filter(Boolean);
+const parseStock = (t) => stockLines(t).slice(0, 2000).map((x) => x.slice(0, 1000)).join('\n');
 const store = useSB ? sbStore : fileStore;
 
 // ---------- 공통 ----------
@@ -190,17 +217,31 @@ async function currentUser(req) {
   if (!c) return null;
   const [uid, exp, sig] = c.split('.');
   if (!uid || !exp || !sig || Number(exp) < Date.now()) return null;
-  const good = sign(uid + '.' + exp);
+  const user = await store.userById(uid);
+  if (!user) return null;
+  const good = sign(uid + '.' + exp + '.' + pwTag(user));
   if (sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) return null;
-  return (await store.userById(uid)) || null;
+  return user;
 }
 const DAY = 86400000;
-const sessionCookie = (uid) => { const exp = Date.now() + 30 * DAY; return `sid=${uid}.${exp}.${sign(uid + '.' + exp)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}` + (BASE.startsWith('https') ? '; Secure' : ''); };
+const pwTag = (u) => crypto.createHash('sha256').update(String(u.pw)).digest('hex').slice(0, 10);
+const sessionCookie = (u) => { const exp = Date.now() + 30 * DAY; return `sid=${u.id}.${exp}.${sign(u.id + '.' + exp + '.' + pwTag(u))}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}` + (BASE.startsWith('https') ? '; Secure' : ''); };
 const clearCookie = 'sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
 const safeNext = (n) => (typeof n === 'string' && /^\/(?!\/)[\w\-\/.?=&%]*$/.test(n)) ? n : '/my';
 const fails = new Map();
-const locked = (k) => { const f = fails.get(k); return !!f && f.n >= 8 && Date.now() - f.t < 15 * 60000; };
-const addFail = (k) => { const f = fails.get(k); fails.set(k, { n: (f && Date.now() - f.t < 15 * 60000 ? f.n : 0) + 1, t: Date.now() }); };
+const lockLeft = (k) => { const f = fails.get(k); return f && f.until > Date.now() ? Math.ceil((f.until - Date.now()) / 1000) : 0; };
+const locked = (k) => lockLeft(k) > 0;
+const waitText = (sec) => (sec >= 60 ? `${Math.ceil(sec / 60)}분` : `${sec}초`);
+const lockMsg = (k) => `시도가 너무 많아요. ${waitText(lockLeft(k))} 뒤에 다시 해주세요`;
+// 5번째 실패부터 잠금: 1분 → 2분 → 4분 → 8분 … (상한 60분). 24시간 동안 실패가 없으면 처음부터
+const addFail = (k) => {
+  const now = Date.now();
+  let f = fails.get(k);
+  if (!f || now - f.t > 86400000) f = { n: 0, until: 0, t: now };
+  f.n += 1; f.t = now;
+  if (f.n >= 5) f.until = now + Math.min(60 * 2 ** (f.n - 5), 3600) * 1000;
+  fails.set(k, f);
+};
 
 // ---------- 이메일 인증 코드 (가입 때만, Brevo HTTP API) ----------
 const BREVO_KEY = (process.env.BREVO_API_KEY || '').trim();
@@ -213,7 +254,7 @@ const MAIL_DAILY = useScript ? 90 : 250; // 앱스 스크립트(일반 Gmail)는
 const EMAIL_RE = /^[^\s@|]+@[^\s@|]+\.[^\s@|]+$/;
 const sends = new Map();
 const sendOk = (k, max, ms) => { const now = Date.now(); const a = (sends.get(k) || []).filter((t) => now - t < ms); if (a.length >= max) { sends.set(k, a); return false; } a.push(now); sends.set(k, a); return true; };
-setInterval(() => { const now = Date.now(); for (const [k, a] of sends) if (!a.length || now - a[a.length - 1] > 86400000) sends.delete(k); for (const [k, f] of fails) if (now - f.t > 900000) fails.delete(k); }, 600000).unref();
+setInterval(() => { const now = Date.now(); for (const [k, a] of sends) if (!a.length || now - a[a.length - 1] > 86400000) sends.delete(k); for (const [k, f] of fails) if (now - f.t > 86400000) fails.delete(k); }, 600000).unref();
 const codeHash = (email, code) => crypto.createHmac('sha256', SESSION_SECRET).update('code:' + email + ':' + code).digest('base64url');
 const mkToken = (email, code) => { const p = Buffer.from(JSON.stringify({ e: email, x: Date.now() + 10 * 60000, c: codeHash(email, code) })).toString('base64url'); return p + '.' + sign(p); };
 const readToken = (t) => {
@@ -260,14 +301,37 @@ async function manageShop(req, res, key) {
   return shop;
 }
 
+// 주문 생성 + 재고형 아이템이면 한 줄을 꺼내 구매자에게 지급
+async function placeOrder(order, item) {
+  let line = null;
+  if (item.stock != null) {
+    line = await store.popStock(item.id);
+    order.delivered = line == null ? '' : line;
+  }
+  try { await store.createOrder(order); }
+  catch (e) {
+    if (line != null) { // 주문 저장 실패하면 꺼낸 줄을 되돌림
+      const it = await store.itemById(item.id);
+      if (it) await store.updateItem(item.id, { stock: [line, ...stockLines(it.stock)].join('\n'), ...(useSB ? { stock_ver: (it.stock_ver || 0) + 1 } : {}) });
+    }
+    throw e;
+  }
+  if (item.stock != null && line == null) await notify(await store.shopById(item.shop), `⚠️ 재고가 없는데 결제가 확인됐어요: ${item.title}. 구매자에게 직접 보내주세요 (${BASE}/o/${order.token})`);
+  return order;
+}
+
 // ---------- 계좌 입금 확인 ----------
 async function confirmDeposit(dep) {
   const existing = await store.orderByToken(dep.token);
   if (existing) { if (dep.status !== 'done') await store.setDepositDone(dep.token); return existing; }
   const item = await store.itemById(dep.item);
   if (!item) return null;
+  if (item.stock != null && !stockLines(item.stock).length) {
+    await notify(await store.shopById(dep.shop), `⚠️ 재고가 0인데 입금이 도착했어요: ${item.title} · 입금자 ${dep.name} (${won(dep.amount)}). 입금자에게 환불해 주세요.`);
+    return null;
+  }
   const order = { token: dep.token, item: dep.item, price: Number(dep.amount), paidAt: Date.now() };
-  try { await store.createOrder(order); } catch (e) {
+  try { await placeOrder(order, item); } catch (e) {
     const again = await store.orderByToken(dep.token);
     if (again) return again;
     throw e;
@@ -298,7 +362,7 @@ async function finalizePaid(p) {
   const item = await store.itemById(orderId.slice(0, 12));
   if (!item) return null;
   const order = { token: orderId, item: item.id, price: Number(p.totalAmount), paidAt: Date.now() };
-  try { await store.createOrder(order); } catch (e) {
+  try { await placeOrder(order, item); } catch (e) {
     const again = await store.orderByToken(orderId);
     if (again) return again;
     throw e;
@@ -364,7 +428,7 @@ route('POST', /^\/signup\/verify$/, async (req, res) => {
   if (!tok) return redirect(res, `/login?e=${enc('인증 시간이 지났어요. 다시 시도해 주세요')}&next=${enc(next)}`);
   const key = 'v:' + tok.e;
   const again = (e) => verifyPage(res, f.t, next, tok.e, e);
-  if (locked(key)) return again('시도가 너무 많아요. 15분 뒤에 다시 해주세요');
+  if (locked(key)) return again(lockMsg(key));
   const a = Buffer.from(codeHash(tok.e, str(f.code, 6)));
   const b = Buffer.from(tok.c);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) { addFail(key); return again('코드가 맞지 않아요'); }
@@ -374,7 +438,7 @@ route('POST', /^\/signup\/verify$/, async (req, res) => {
   const user = { id: rid(9), email: tok.e, pw: hashPw(pw), created: Date.now() };
   await store.createUser(user);
   fails.delete(key);
-  redirect(res, next, { 'Set-Cookie': sessionCookie(user.id) });
+  redirect(res, next, { 'Set-Cookie': sessionCookie(user) });
 });
 
 route('POST', /^\/signup$/, async (req, res) => {
@@ -388,18 +452,50 @@ route('POST', /^\/signup$/, async (req, res) => {
   if (await store.userByEmail(email)) return back('이미 가입된 이메일이에요');
   const user = { id: rid(9), email, pw: hashPw(pw), created: Date.now() };
   await store.createUser(user);
-  redirect(res, safeNext(f.next), { 'Set-Cookie': sessionCookie(user.id) });
+  redirect(res, safeNext(f.next), { 'Set-Cookie': sessionCookie(user) });
 });
 
 route('POST', /^\/login$/, async (req, res) => {
   const f = await readForm(req);
   const email = str(f.email, 100).toLowerCase();
   const back = (e) => redirect(res, `/login?e=${enc(e)}&next=${enc(safeNext(f.next))}`);
-  if (locked(email)) return back('시도가 너무 많아요. 15분 뒤에 다시 해주세요');
+  if (locked(email)) return back(lockMsg(email));
   const user = await store.userByEmail(email);
   if (!user || !checkPw(String(f.pw || '').slice(0, 100), user.pw)) { addFail(email); return back('이메일 또는 비밀번호가 맞지 않아요'); }
   fails.delete(email);
-  redirect(res, safeNext(f.next), { 'Set-Cookie': sessionCookie(user.id) });
+  redirect(res, safeNext(f.next), { 'Set-Cookie': sessionCookie(user) });
+});
+
+route('GET', /^\/account$/, async (req, res) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=/account');
+  const q = new URL(req.url, BASE).searchParams;
+  send(res, 200, page('계정 설정', `<a class="sub" href="/my">← 내 상점</a><h1>계정 설정</h1><p class="sub">${esc(u.email)}</p>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+<form class="card" method="post" action="/account/password"><b>비밀번호 변경</b>
+<input name="cur" type="password" placeholder="현재 비밀번호" autocomplete="current-password" required maxlength="100">
+<input name="pw" type="password" placeholder="새 비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
+<input name="pw2" type="password" placeholder="새 비밀번호 확인" autocomplete="new-password" required minlength="8" maxlength="100">
+<button>변경하기</button></form>`));
+});
+
+route('POST', /^\/account\/password$/, async (req, res) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=/account');
+  const f = await readForm(req);
+  const back = (k, t) => redirect(res, `/account?${k}=${enc(t)}`);
+  const key = 'pw:' + u.id;
+  if (locked(key)) return back('e', lockMsg(key));
+  const cur = String(f.cur || '').slice(0, 100);
+  if (!checkPw(cur, u.pw)) { addFail(key); return back('e', '현재 비밀번호가 맞지 않아요'); }
+  const pw = String(f.pw || '');
+  if (pw.length < 8 || pw.length > 100) return back('e', '새 비밀번호는 8자 이상이어야 해요');
+  if (pw !== String(f.pw2 || '')) return back('e', '새 비밀번호 확인이 달라요');
+  if (pw === cur) return back('e', '현재와 다른 비밀번호를 써주세요');
+  const nu = { ...u, pw: hashPw(pw) };
+  await store.updateUser(u.id, { pw: nu.pw });
+  fails.delete(key);
+  redirect(res, '/account?m=' + enc('비밀번호를 바꿨어요'), { 'Set-Cookie': sessionCookie(nu) });
 });
 
 route('POST', /^\/logout$/, (req, res) => redirect(res, '/', { 'Set-Cookie': clearCookie }));
@@ -408,7 +504,7 @@ route('GET', /^\/my$/, async (req, res) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=/my');
   const shops = await store.shopsByOwner(u.id);
-  send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)}</p>
+  send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
 <form class="card" method="post" action="/shops"><b>새 상점 만들기</b><br>
 <input name="name" placeholder="상점 이름" required maxlength="40">
@@ -441,7 +537,7 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
 <div class="warn">관리 주소는 비밀번호와 같아요. 북마크하고 공유하지 마세요: <code>${BASE}/m/${shop.key}</code></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
 <h2>⏳ 입금 대기 ${waiting.length}건</h2>
-${waiting.map((d) => { const it = items.find((x) => x.id === d.item); return `<div class="card"><b>${esc(d.name)}</b> <span class="price">${won(d.amount)}</span><br><span class="sub">${esc(it ? it.title : '')}${Date.now() > d.created + DEP_TTL ? ' · 기한 지남' : ''}</span>
+${waiting.map((d) => { const it = items.find((x) => x.id === d.item); return `<div class="card"><b>${esc(d.name)}</b> <span class="price">${won(d.amount)}</span><br><span class="sub">${esc(it ? it.title : '')}${Date.now() > d.created + DEP_TTL ? ' · 기한 지남' : ''}${it && it.stock != null && !stockLines(it.stock).length ? ' · ⚠️ 재고 없음(환불 필요)' : ''}</span>
 <form method="post" action="/m/${shop.key}/deposits/${d.token}/confirm"><button>입금 확인</button></form></div>`; }).join('') || '<p class="sub">입금 대기 중인 주문이 없어요</p>'}
 <h2>🏦 계좌 입금 받기</h2>
 <form class="card" method="post" action="/m/${shop.key}/pay">
@@ -459,11 +555,12 @@ ${shop.pay_mode === 'auto' && smsUrl ? `<div class="card"><b>📩 문자 자동 
 <input name="title" placeholder="제목" required maxlength="80">
 <input name="price" type="number" min="100" step="100" placeholder="가격 (원)" required>
 <textarea name="preview" placeholder="미리보기 (결제 전 공개되는 설명)" required></textarea>
-<textarea name="secret" placeholder="잠금 정보 (결제 후에만 공개: 내용, 링크 등)" required></textarea>
+<textarea name="secret" placeholder="잠금 정보 (결제 후에만 공개: 내용, 링크 등). 재고를 쓰면 비워도 돼요"></textarea>
+<textarea name="stock" placeholder="재고 (선택). 한 줄에 하나씩 적으면 구매할 때마다 한 줄씩 순서대로 지급돼요. 예) 치킨버거 ⏎ 불고기버거. 비우면 재고 제한 없이 같은 잠금 정보를 보여줘요"></textarea>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" checked style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>등록</button></form>
 <h2>내 아이템</h2>
-${items.map((i) => `<div class="card"><b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a><br><a href="/m/${shop.key}/items/${i.id}/edit">✏️ 수정·삭제</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
+${items.map((i) => `<div class="card"><b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}${i.stock != null ? ` · 재고 ${stockLines(i.stock).length}개` : ''}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a><br><a href="/m/${shop.key}/items/${i.id}/edit">✏️ 수정·삭제</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
 });
 
 route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
@@ -472,7 +569,11 @@ route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
   const f = await readForm(req);
   const price = parseInt(f.price, 10);
   if (!(price >= 100)) return send(res, 400, page('오류', '<h1>가격은 100원 이상이어야 해요</h1>'));
-  const item = { id: rid(9), shop: shop.id, pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000), created: Date.now() };
+  const secret = String(f.secret || '').slice(0, 10000);
+  const stock = parseStock(f.stock);
+  if (!secret.trim() && !stock) return send(res, 400, page('오류', '<h1>잠금 정보나 재고 중 하나는 적어주세요</h1>'));
+  const item = { id: rid(9), shop: shop.id, pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret, created: Date.now() };
+  if (stock) item.stock = stock;
   await store.createItem(item);
   redirect(res, `/m/${shop.key}`);
 });
@@ -490,7 +591,9 @@ ${sold ? `<p class="warn">이미 ${sold}건 팔렸어요. 가격을 바꿔도 �
 <input name="title" value="${esc(item.title)}" required maxlength="80">
 <input name="price" type="number" min="100" step="100" value="${esc(item.price)}" required>
 <textarea name="preview" required>${esc(item.preview)}</textarea>
-<textarea name="secret" required>${esc(item.secret)}</textarea>
+<textarea name="secret" placeholder="잠금 정보 (재고를 쓰면 비워도 돼요)">${esc(item.secret)}</textarea>
+<label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="use_stock" ${item.stock != null ? 'checked' : ''} style="width:auto;margin:0"> 재고 사용 (한 줄에 하나, 구매할 때마다 순서대로 지급)</label>
+<textarea name="stock" placeholder="남은 재고 (한 줄에 하나)">${esc(item.stock || '')}</textarea>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" ${item.pub ? 'checked' : ''} style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>저장</button></form>
 <h2>삭제</h2>
@@ -506,7 +609,13 @@ route('POST', /^\/m\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m) => {
   const f = await readForm(req);
   const price = parseInt(f.price, 10);
   if (!(price >= 100)) return send(res, 400, page('오류', '<h1>가격은 100원 이상이어야 해요</h1>'));
-  await store.updateItem(item.id, { pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret: String(f.secret).slice(0, 10000) });
+  const useStock = f.use_stock === 'on';
+  const secret = String(f.secret || '').slice(0, 10000);
+  const stock = useStock ? parseStock(f.stock) : null;
+  if (!secret.trim() && !useStock) return send(res, 400, page('오류', '<h1>잠금 정보나 재고 중 하나는 적어주세요</h1>'));
+  const upd = { pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret };
+  if (useStock || item.stock != null) { upd.stock = stock; upd.stock_ver = (item.stock_ver || 0) + 1; }
+  await store.updateItem(item.id, upd);
   redirect(res, `/m/${shop.key}`);
 });
 
@@ -543,7 +652,10 @@ route('POST', /^\/m\/([\w-]+)\/deposits\/([\w-]+)\/confirm$/, async (req, res, m
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
   const dep = await store.depositByToken(m[2]);
-  if (dep && dep.shop === shop.id) await confirmDeposit(dep);
+  if (dep && dep.shop === shop.id) {
+    const order = await confirmDeposit(dep);
+    if (!order) return send(res, 400, page('확인 불가', `<h1>재고가 없어서 확인할 수 없어요</h1><p class="sub">입금자에게 환불해 주세요. 재고를 채운 뒤 다시 확인하면 열려요.</p><p><a href="/m/${shop.key}">돌아가기</a></p>`));
+  }
   redirect(res, `/m/${shop.key}`);
 });
 
@@ -552,6 +664,7 @@ route('POST', /^\/i\/([\w-]+)\/deposit$/, async (req, res, m) => {
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const shop = await store.shopById(item.shop);
   if (!shop || !shop.bank || !shop.account) return send(res, 400, page('오류', '<h1>이 상점은 계좌 입금을 받지 않아요</h1>'));
+  if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const f = await readForm(req);
   const name = str(f.name, 20);
   if (name.length < 2) return send(res, 400, page('오류', `<h1>입금자명을 2자 이상 적어주세요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
@@ -585,7 +698,7 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
   if (!shop) return notFound(res, '상점을 찾을 수 없어요');
   const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
   send(res, 200, page(shop.name, `<h1>${esc(shop.name)}</h1><p class="sub">링크몰 상점</p>
-${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span></div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
+${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span>${i.stock != null ? (stockLines(i.stock).length ? ` <span class="sub">재고 ${stockLines(i.stock).length}개</span>` : ' <span class="sub">품절</span>') : ''}</div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
@@ -594,9 +707,9 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   const shop = await store.shopById(item.shop);
   const sold = (await store.ordersForItems([item.id])).length;
   send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
-<h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건</p>
+<h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건${item.stock != null ? ` · 재고 ${stockLines(item.stock).length}개` : ''}</p>
 <div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
-${payBlock(item, shop)}`));
+${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : payBlock(item, shop)}`));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
@@ -605,8 +718,9 @@ route('POST', /^\/i\/([\w-]+)\/pay$/, async (req, res, m) => {
     if (useToss || (sh0 && sh0.bank && sh0.account)) return send(res, 403, page('막힘', '<h1>테스트 결제는 꺼져 있어요</h1>')); }
   const item = await store.itemById(m[1]);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const order = { token: rid(16), item: item.id, price: item.price, paidAt: Date.now() };
-  await store.createOrder(order);
+  await placeOrder(order, item);
   await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`);
   redirect(res, `/o/${order.token}`);
 });
@@ -619,6 +733,7 @@ route('GET', /^\/pay\/success$/, async (req, res) => {
   if (await store.orderByToken(orderId)) return redirect(res, `/o/${orderId}`); // 새로고침 대비
   const item = await store.itemById(orderId.slice(0, 12));
   if (!item) return send(res, 404, page('오류', '<h1>아이템을 찾을 수 없어요</h1>'));
+  if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이라 결제를 승인하지 않았어요</h1><p class="sub">카드 결제는 청구되지 않아요.</p><p><a href="/i/${item.id}">돌아가기</a></p>`));
   // 금액은 URL이 아니라 DB의 가격으로 승인 요청 (토스가 실제 결제액과 대조)
   const r = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
     method: 'POST',
@@ -659,6 +774,8 @@ route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
       if (dep.status === 'done') order = await confirmDeposit(dep);
       else {
         const shop = await store.shopById(dep.shop);
+        const depItem = await store.itemById(dep.item);
+        if (depItem && depItem.stock != null && !stockLines(depItem.stock).length) return send(res, 200, page('품절', `<h1>😢 품절이에요</h1><p class="sub">이미 입금했다면 판매자에게 환불을 요청해 주세요. 입금자명 ${esc(dep.name)}, ${won(dep.amount)}</p>`));
         if (Date.now() > dep.created + DEP_TTL) return send(res, 200, page('만료', `<h1>입금 기한이 지났어요</h1><p class="sub">이미 입금했다면 판매자에게 확인을 요청하세요.</p><p><a href="/i/${esc(dep.item)}">다시 주문하기</a></p>`));
         return send(res, 200, page('입금 대기', `<h1>🏦 입금해 주세요</h1>
 <div class="card"><b>${esc(shop && shop.bank)}</b><br><span style="font-size:20px;font-weight:700">${esc(shop && shop.account)}</span><br>예금주 ${esc(shop && shop.holder)}<br><span class="price">${won(dep.amount)}</span></div>
@@ -688,7 +805,8 @@ route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
   const item = await store.itemById(order.item);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   send(res, 200, page('내 보관함', `<h1>🔓 잠금 해제됨</h1><h2>${esc(item.title)}</h2>
-<div class="secret">${esc(item.secret)}</div>
+${order.delivered ? `<p class="sub">지급된 상품</p><div class="secret">${esc(order.delivered)}</div>` : (item.stock != null && order.delivered === '' ? '<div class="warn">재고가 부족해서 아직 지급되지 않았어요. 판매자가 직접 보내드려요. 판매자에게 문의해 주세요.</div>' : '')}
+${item.secret ? `<div class="secret">${esc(item.secret)}</div>` : ''}
 <p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>`));
 });
 
