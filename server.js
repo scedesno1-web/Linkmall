@@ -1118,11 +1118,11 @@ ${hookCards}${hookAdd}
 <form method="post" action="/m/${shop.key}/webhook-test" style="margin-top:8px"><button${hooks.length ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기 (하루 20번까지)</button></form></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
 <h2 id="cats">📂 메뉴 카테고리</h2>
-<p class="sub">구매자가 상점에서 옆 메뉴(☰)를 열면 보이는 목록이에요. 카테고리를 만들고, 이름을 바꾸고, 각 카테고리에 뜰 상품을 고르세요. 안 만들면 "상품" 하나에 공개 상품이 전부 떠요. (${parseCats(shop).length}/${MAX_CATS}개)</p>
-${parseCats(shop).map((c) => `<div class="card"><form method="post" action="/m/${shop.key}/cats/${c.id}/save"><input name="name" value="${esc(c.name)}" maxlength="20" required>
+<p class="sub">구매자가 상점에서 옆 메뉴(☰)를 열면 보이는 목록이에요. 카테고리를 만들고, 이름을 바꾸고, 각 카테고리에 뜰 상품을 고르세요. 처음엔 "상품" 하나에 공개 상품이 전부 떠 있어요. 그것도 똑같이 이름을 바꾸거나 상품을 골라서 저장하면 돼요. 어디에도 안 넣은 공개 상품은 "그 외"에 모여요. (${parseCats(shop).length}/${MAX_CATS}개)</p>
+${(parseCats(shop).length ? parseCats(shop) : [{ id: 'default', name: '상품', items: items.filter((i) => i.pub).map((i) => i.id), basic: true }]).map((c) => `<div class="card"><form method="post" action="/m/${shop.key}/cats/${c.id}/save"><input name="name" value="${esc(c.name)}" maxlength="20" required>
 ${items.filter((i) => i.pub).map((i) => `<label style="display:block;padding:5px 0;font-size:14px"><input type="checkbox" name="i_${i.id}" value="1"${c.items.includes(i.id) ? ' checked' : ''} style="width:auto;padding:0;margin:0 8px 0 0;vertical-align:middle">${esc(i.title)}</label>`).join('') || '<p class="sub">공개된 상품이 아직 없어요</p>'}
 <button style="margin-top:8px">저장</button></form>
-<form method="post" action="/m/${shop.key}/cats/${c.id}/delete" onsubmit="return confirm('이 카테고리를 삭제할까요? (상품은 지워지지 않아요)')"><button style="margin-top:6px;background:#dc2626">카테고리 삭제</button></form></div>`).join('')}
+${c.basic ? '<p class="sub" style="margin:8px 0 0">기본 카테고리예요. 이름을 바꾸거나 체크를 풀고 저장하면 내 카테고리로 바뀌어요.</p>' : `<form method="post" action="/m/${shop.key}/cats/${c.id}/delete" onsubmit="return confirm('이 카테고리를 삭제할까요? (상품은 지워지지 않아요)')"><button style="margin-top:6px;background:#dc2626">카테고리 삭제</button></form>`}</div>`).join('')}
 <form class="card" method="post" action="/m/${shop.key}/cats"><input name="name" placeholder="새 카테고리 이름 (예: 음식)" required maxlength="20"><button>카테고리 만들기</button></form>
 <h2>🏷️ 칭호</h2>
 <form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
@@ -1465,7 +1465,8 @@ route('POST', /^\/m\/([\w-]+)\/cats\/([\w-]+)\/(save|delete)$/, async (req, res,
   if (!shop) return;
   const f = await readForm(req);
   let cats = parseCats(shop);
-  const c = cats.find((x) => x.id === m[2]);
+  let c = cats.find((x) => x.id === m[2]);
+  if (!c && m[2] === 'default' && !cats.length) { c = { id: rid(6), name: '상품', items: [] }; cats.push(c); } // 기본 "상품"을 처음 저장하면 진짜 카테고리가 됨
   if (!c) return notFound(res, '카테고리를 찾을 수 없어요');
   if (m[3] === 'delete') cats = cats.filter((x) => x !== c);
   else {
