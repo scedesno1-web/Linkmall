@@ -364,7 +364,7 @@ body{margin:0;font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;b
 a{color:inherit}
 .top{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #eee}
 .ib{width:42px;height:42px;border:0;background:#f4f4f5;border-radius:13px;display:grid;place-items:center;cursor:pointer;padding:0;color:#18181b}
-.top b{font-size:17px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top b,.top .tb{font-size:17px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top .tb{font-weight:700;text-decoration:none;color:inherit}
 .chip{font-size:13px;font-weight:700;background:#f4f4f5;border-radius:999px;padding:9px 13px;text-decoration:none;white-space:nowrap}
 .main{max-width:560px;margin:0 auto;padding:18px 18px 70px}
 .ov{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
@@ -376,7 +376,7 @@ body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
 .dr h3{font-size:22px;margin:30px 0 12px 12px}
 .pc{display:block;background:#fafafa;border:1px solid #f0f0f0;border-radius:28px;box-shadow:0 3px 12px rgba(0,0,0,.08);margin:0 0 22px;overflow:hidden;text-decoration:none;color:inherit}
 .pc.off{opacity:.55}
-.pg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sg .bx{margin:0;display:flex;flex-direction:column;gap:4px}.sg .sv{font-size:30px;letter-spacing:-1px}
 .pg .pc{margin:0;border-radius:18px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
 .pg .im{aspect-ratio:1/1}.pg .im svg{width:36px;height:36px}
 .pg .pb{padding:12px 12px 14px}
@@ -411,6 +411,7 @@ const ICO = {
   home: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>',
   coin: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5h4a1.75 1.75 0 0 1 0 3.5h-3a1.75 1.75 0 0 0 0 3.5h4"/></svg>',
   cube: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
+  chart: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   star: '<svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17.4 6.1 20.7l1.3-6.6L2.5 9.5l6.6-.8z"/></svg>',
 };
 // 상점 메뉴(옆 서랍) 카테고리: 판매자가 만들고, 이름을 바꾸고, 각 카테고리에 뜰 상품을 고름. shops.cats 에 JSON 문자열로 저장
@@ -434,10 +435,10 @@ const navGroups = (shop, pubItems) => {
   return g;
 };
 const shopPage = (shop, title, body, me, bal, next, active = 'home', groups = [], curId = '') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${shopCss}</style></head><body>${SPLASH}
-<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><b>${esc(shop.name)}</b>${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
+<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><a class="tb" href="/s/${shop.id}">${esc(shop.name)}</a>${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
 <div class="ov" onclick="document.body.classList.remove('open')"></div>
 <nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(shop.name)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
-<a class="nv${active === 'home' ? ' on' : ''}" href="/s/${shop.id}">${ICO.home}대시보드</a>
+<a class="nv${active === 'stats' ? ' on' : ''}" href="/s/${shop.id}/stats">${ICO.chart}통계</a>
 <a class="nv" href="/w/${shop.id}">${ICO.coin}포인트 충전</a>
 ${groups.map((g, n) => `${n === 0 ? `<div class="sm" style="margin:30px 0 -22px 12px;font-size:13px">${esc(shop.name)}</div>` : ''}<h3${n ? ' style="margin-top:20px"' : ''}>${esc(g.name)}</h3>
 ${g.items.length ? g.items.map((i) => `<a class="nv${i.id === curId ? ' on' : ''}" href="/i/${i.id}">${ICO.cube}${esc(i.title)}</a>`).join('') : '<p class="sm" style="margin:0 0 0 14px">등록된 상품이 없어요</p>'}`).join('')}</nav>
@@ -1649,6 +1650,48 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
 <div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
   };
   send(res, 200, shopPage(shop, shop.name, (items.length ? `<div class="pg">${items.map(card).join('')}</div>` : '<p class="sm">등록된 아이템이 없어요</p>'), me, bal, '/s/' + shop.id, 'items', navGroups(shop, items)));
+});
+
+// 통계: 평점, 총 팔린 횟수, 이번 주(월~일) 날짜별 팔린 횟수 그래프, 상품별 판매
+route('GET', /^\/s\/([\w-]+)\/stats$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
+  const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
+  const me = await currentUser(req);
+  const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
+  const orders = await store.ordersForItems(items.map((i) => i.id));
+  const reviews = await store.reviewsByShop(shop.id);
+  const KST = 9 * 3600e3;
+  const dayKey = (t) => new Date(Number(t) + KST).toISOString().slice(0, 10);
+  const nowK = new Date(Date.now() + KST);
+  const dow = (nowK.getUTCDay() + 6) % 7; // 월=0 … 일=6
+  const days = [...Array(7)].map((_, n) => { const d = new Date(Date.UTC(nowK.getUTCFullYear(), nowK.getUTCMonth(), nowK.getUTCDate() - dow + n)); return { key: d.toISOString().slice(0, 10), label: '월화수목금토일'[n], md: `${d.getUTCMonth() + 1}/${d.getUTCDate()}`, n: 0, today: n === dow, future: n > dow }; });
+  const byDay = new Map(days.map((d) => [d.key, d]));
+  const sold = new Map();
+  let total = 0;
+  for (const o of orders) {
+    const q = orderQty(o); total += q;
+    sold.set(o.item, (sold.get(o.item) || 0) + q);
+    const d = byDay.get(dayKey(o.paidAt)); if (d) d.n += q;
+  }
+  const weekTotal = days.reduce((a, d) => a + d.n, 0);
+  const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
+  const max = Math.max(1, ...days.map((d) => d.n));
+  const W = 320, H = 170, bw = 28, gap = (W - bw * 7) / 8, base = 138, top = 26;
+  const bars = days.map((d, n) => {
+    const x = gap + n * (bw + gap), h = d.n ? Math.max(6, Math.round((base - top) * d.n / max)) : 0;
+    return `<g><rect x="${x}" y="${base - h}" width="${bw}" height="${h}" rx="8" fill="${d.today ? '#18181b' : '#a1a1aa'}"${d.future ? ' opacity=".35"' : ''}/>${!d.future ? `<text x="${x + bw / 2}" y="${base - h - 7}" text-anchor="middle" font-size="12" font-weight="700" fill="#18181b">${d.n}</text>` : ''}<text x="${x + bw / 2}" y="${base + 17}" text-anchor="middle" font-size="12" font-weight="${d.today ? 800 : 500}" fill="${d.today ? '#18181b' : '#71717a'}">${d.label}</text><text x="${x + bw / 2}" y="${base + 31}" text-anchor="middle" font-size="9.5" fill="#a1a1aa">${d.md}</text></g>`;
+  }).join('');
+  const rank = items.map((i) => ({ i, n: sold.get(i.id) || 0 })).sort((a, b) => b.n - a.n).slice(0, 10);
+  const rmax = Math.max(1, ...rank.map((r) => r.n));
+  const body = `<h1 style="font-size:24px;margin:6px 0 14px">${ICO.chart} 통계</h1>
+<div class="sg"><div class="bx"><span class="sm">평점</span><b class="sv">${reviews.length ? '★ ' + avg.toFixed(1) : '-'}</b><span class="sm">후기 ${reviews.length}개</span></div>
+<div class="bx"><span class="sm">총 팔린 횟수</span><b class="sv">${total.toLocaleString('ko-KR')}</b><span class="sm">지금까지</span></div></div>
+<div class="bx"><div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:17px">이번 주 판매</b><span class="sm">${weekTotal}번 팔렸어요</span></div>
+<svg viewBox="0 0 ${W} ${H + 10}" width="100%" role="img" aria-label="이번 주 날짜별 판매 횟수 그래프" style="margin-top:8px;display:block"><line x1="8" y1="${base}" x2="${W - 8}" y2="${base}" stroke="#e4e4e7"/>${bars}</svg></div>
+<div class="bx"><b style="font-size:17px">상품별 팔린 횟수</b>
+${rank.length ? rank.map((r) => `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;gap:10px;font-size:14px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.i.title)}</span><b>${r.n}</b></div><div style="height:8px;border-radius:4px;background:#e4e4e7;margin-top:5px;overflow:hidden"><div style="height:100%;width:${Math.round(100 * r.n / rmax)}%;background:#18181b;border-radius:4px"></div></div></div>`).join('') : '<p class="sm">등록된 상품이 없어요</p>'}</div>`;
+  send(res, 200, shopPage(shop, '통계', body, me, bal, '/s/' + shop.id + '/stats', 'stats', navGroups(shop, items)));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
