@@ -58,6 +58,78 @@ const sbStore = {
   async updateItem(id, f) { await sbPatch('items', `id=eq.${enc(id)}`, f); },
   async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
   async updateUser(id, f) { await sbPatch('users', `id=eq.${enc(id)}`, f); },
+  async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
+  async listUsers(q) { return sbGet('users', `select=id,email,points,banned,created&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
+  async allShops() { return sbGet('shops', 'select=*&order=created.desc&limit=200'); },
+  // 포인트 증감: points가 읽은 값 그대로일 때만 갱신(동시 결제에도 잔액이 틀어지지 않음). 잔액 부족이면 null
+  async addPoints(uid, delta) {
+    for (let n = 0; n < 8; n++) {
+      const u = await sbStore.userById(uid);
+      if (!u) return null;
+      const cur = Number(u.points || 0); const np = cur + delta;
+      if (np < 0) return null;
+      const r = await fetch(`${SB_URL}/rest/v1/users?id=eq.${enc(uid)}&points=eq.${cur}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ points: np }) });
+      if (!r.ok) throw new Error(`supabase addPoints ${r.status} ${await r.text()}`);
+      if ((await r.json()).length) return np;
+    }
+    return null;
+  },
+  async addEarned(shopId, delta) {
+    for (let n = 0; n < 8; n++) {
+      const sh = await sbStore.shopById(shopId);
+      if (!sh) return null;
+      const cur = Number(sh.earned || 0); const np = Math.max(0, cur + delta);
+      const r = await fetch(`${SB_URL}/rest/v1/shops?id=eq.${enc(shopId)}&earned=eq.${cur}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ earned: np }) });
+      if (!r.ok) throw new Error(`supabase addEarned ${r.status} ${await r.text()}`);
+      if ((await r.json()).length) return np;
+    }
+    return null;
+  },
+  async shopPoints(uid, shopId) { const r = await sbGet('shop_points', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&select=points`); return r[0] ? Number(r[0].points) : 0; },
+  // 상점별 포인트 증감(동시 결제에도 안전). 잔액 부족이면 null
+  async addShopPoints(uid, shopId, delta) {
+    for (let n = 0; n < 8; n++) {
+      const r = await sbGet('shop_points', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&select=points`);
+      if (!r[0]) {
+        if (delta < 0) return null;
+        try { await sbInsert('shop_points', { user_id: uid, shop: shopId, points: delta }); return delta; }
+        catch (e) { if (!/23505|409|duplicate/i.test(e.message)) throw e; continue; }
+      }
+      const cur = Number(r[0].points); const np = cur + delta;
+      if (np < 0) return null;
+      const rr = await fetch(`${SB_URL}/rest/v1/shop_points?user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&points=eq.${cur}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ points: np }) });
+      if (!rr.ok) throw new Error(`supabase addShopPoints ${rr.status} ${await rr.text()}`);
+      if ((await rr.json()).length) return np;
+    }
+    return null;
+  },
+  async userShopPoints(uid) { return sbGet('shop_points', `user_id=eq.${enc(uid)}&select=shop,points&order=points.desc`); },
+  async shopCharges(shopId) { return sbGet('charges', `shop=eq.${enc(shopId)}&status=eq.waiting&select=*&order=created.desc&limit=100`); },
+  async userShopCharges(uid, shopId) { return sbGet('charges', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&status=eq.waiting&select=*&order=created.desc`); },
+  async ledgerForUserShop(uid, shopId) { return sbGet('ledger', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&select=*&order=created.desc&limit=30`); },
+  async createCharge(c) { await sbInsert('charges', c); },
+  async chargeByToken(t) { return (await sbGet('charges', `token=eq.${enc(t)}&select=*`))[0]; },
+  async waitingCharges() { return sbGet('charges', 'status=eq.waiting&select=*&order=created.desc&limit=200'); },
+  async userCharges(uid) { return sbGet('charges', `user_id=eq.${enc(uid)}&status=eq.waiting&select=*&order=created.desc`); },
+  async claimCharge(t, to = 'done') {
+    const r = await fetch(`${SB_URL}/rest/v1/charges?token=eq.${enc(t)}&status=eq.waiting`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ status: to }) });
+    if (!r.ok) throw new Error(`supabase claimCharge ${r.status} ${await r.text()}`);
+    return (await r.json()).length > 0;
+  },
+  async addLedger(l) { await sbInsert('ledger', l); },
+  async ledgerForUser(uid) { return sbGet('ledger', `user_id=eq.${enc(uid)}&select=*&order=created.desc&limit=30`); },
+  async createTitle(t) { await sbInsert('titles', t); },
+  async titlesByShop(shopId) { return sbGet('titles', `shop=eq.${enc(shopId)}&select=*&order=created.asc`); },
+  async titleById(id) { return (await sbGet('titles', `id=eq.${enc(id)}&select=*`))[0]; },
+  async deleteTitle(id) { await sbDelete('user_titles', `title=eq.${enc(id)}`); await sbDelete('titles', `id=eq.${enc(id)}`); },
+  async grantTitle(uid, tid, shopId) { try { await sbInsert('user_titles', { user_id: uid, title: tid, shop: shopId, created: Date.now() }); } catch (e) { if (!/23505|409|duplicate/i.test(e.message)) throw e; } },
+  async revokeTitle(uid, tid) { await sbDelete('user_titles', `user_id=eq.${enc(uid)}&title=eq.${enc(tid)}`); },
+  async titleHolders(tid) { return sbGet('user_titles', `title=eq.${enc(tid)}&select=user_id&limit=50`); },
+  async userTitles(uid) {
+    const g = await sbGet('user_titles', `user_id=eq.${enc(uid)}&select=title`);
+    if (!g.length) return [];
+    return sbGet('titles', `id=in.(${g.map((x) => enc(x.title)).join(',')})&select=*`);
+  },
   // 재고 한 줄 꺼내기: stock_ver가 그대로일 때만 갱신(동시에 두 명이 같은 줄을 가져가는 걸 막음)
   async popStock(itemId) {
     for (let n = 0; n < 8; n++) {
@@ -87,7 +159,7 @@ const sbStore = {
 const DB = path.join(__dirname, 'db.json');
 const load = () => { try { return JSON.parse(fs.readFileSync(DB, 'utf8')); } catch { return { shops: {}, items: {}, orders: {} }; } };
 const save = (d) => fs.writeFileSync(DB, JSON.stringify(d, null, 2));
-const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; return d; };
+const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; return d; };
 const fileStore = {
   async updateShop(id, f) { const d = L(); if (d.shops[id]) Object.assign(d.shops[id], f); save(d); },
   async shopsByOwner(uid) { return Object.values(L().shops).filter((s) => s.owner === uid).sort((a, b) => b.created - a.created); },
@@ -107,6 +179,32 @@ const fileStore = {
   async updateItem(id, f) { const d = load(); if (d.items[id]) Object.assign(d.items[id], f); save(d); },
   async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
   async updateUser(id, f) { const d = L(); if (d.users[id]) Object.assign(d.users[id], f); save(d); },
+  async userByCode(c) { const r = Object.values(L().users).filter((u) => u.id.startsWith(c)); return r.length === 1 ? r[0] : null; },
+  async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, points: u.points || 0, banned: !!u.banned, created: u.created })); },
+  async allShops() { return Object.values(L().shops).sort((a, b) => b.created - a.created); },
+  async addPoints(uid, delta) { const d = L(); const u = d.users[uid]; if (!u) return null; const np = Number(u.points || 0) + delta; if (np < 0) return null; u.points = np; save(d); return np; },
+  async addEarned(shopId, delta) { const d = L(); const sh = d.shops[shopId]; if (!sh) return null; sh.earned = Math.max(0, Number(sh.earned || 0) + delta); save(d); return sh.earned; },
+  async shopPoints(uid, shopId) { return Number(L().shop_points[uid + '|' + shopId] || 0); },
+  async addShopPoints(uid, shopId, delta) { const d = L(); const k = uid + '|' + shopId; const np = Number(d.shop_points[k] || 0) + delta; if (np < 0) return null; d.shop_points[k] = np; save(d); return np; },
+  async userShopPoints(uid) { return Object.entries(L().shop_points).filter(([k]) => k.startsWith(uid + '|')).map(([k, v]) => ({ shop: k.split('|')[1], points: v })); },
+  async shopCharges(shopId) { return Object.values(L().charges).filter((c) => c.shop === shopId && c.status === 'waiting').sort((a, b) => b.created - a.created); },
+  async userShopCharges(uid, shopId) { return Object.values(L().charges).filter((c) => c.user_id === uid && c.shop === shopId && c.status === 'waiting').sort((a, b) => b.created - a.created); },
+  async ledgerForUserShop(uid, shopId) { return L().ledger.filter((l) => l.user_id === uid && l.shop === shopId).sort((a, b) => b.created - a.created).slice(0, 30); },
+  async createCharge(c) { const d = L(); d.charges[c.token] = c; save(d); },
+  async chargeByToken(t) { return L().charges[t]; },
+  async waitingCharges() { return Object.values(L().charges).filter((c) => c.status === 'waiting').sort((a, b) => b.created - a.created); },
+  async userCharges(uid) { return Object.values(L().charges).filter((c) => c.user_id === uid && c.status === 'waiting').sort((a, b) => b.created - a.created); },
+  async claimCharge(t, to = 'done') { const d = L(); const c = d.charges[t]; if (!c || c.status !== 'waiting') return false; c.status = to; save(d); return true; },
+  async addLedger(l) { const d = L(); d.ledger.push(l); save(d); },
+  async ledgerForUser(uid) { return L().ledger.filter((l) => l.user_id === uid).sort((a, b) => b.created - a.created).slice(0, 30); },
+  async createTitle(t) { const d = L(); d.titles[t.id] = t; save(d); },
+  async titlesByShop(shopId) { return Object.values(L().titles).filter((t) => t.shop === shopId).sort((a, b) => a.created - b.created); },
+  async titleById(id) { return L().titles[id]; },
+  async deleteTitle(id) { const d = L(); delete d.titles[id]; d.user_titles = d.user_titles.filter((x) => x.title !== id); save(d); },
+  async grantTitle(uid, tid, shopId) { const d = L(); if (!d.user_titles.some((x) => x.user_id === uid && x.title === tid)) d.user_titles.push({ user_id: uid, title: tid, shop: shopId, created: Date.now() }); save(d); },
+  async revokeTitle(uid, tid) { const d = L(); d.user_titles = d.user_titles.filter((x) => !(x.user_id === uid && x.title === tid)); save(d); },
+  async titleHolders(tid) { return L().user_titles.filter((x) => x.title === tid).slice(0, 50).map((x) => ({ user_id: x.user_id })); },
+  async userTitles(uid) { const d = L(); return d.user_titles.filter((x) => x.user_id === uid).map((x) => d.titles[x.title]).filter(Boolean); },
   async popStock(itemId) {
     const d = load(); const it = d.items[itemId];
     if (!it || it.stock == null) return null;
@@ -149,6 +247,15 @@ a{color:#4f46e5}.warn{background:#fff7ed;color:#9a3412;border-radius:10px;paddin
 `;
 const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${css}</style></head><body><div class="w">${body}</div></body></html>`;
 
+const pointsBlock = (item, me, bal, shop) => {
+  const price = Number(item.price);
+  const canCharge = !!(shop.bank && shop.account && shop.holder);
+  if (!me) return `<div class="lock">🔒 이 상점 포인트로 구매하면 바로 잠금이 풀려요</div><br><a class="btn" href="/login?next=${enc('/i/' + item.id)}">로그인하고 구매하기</a>`;
+  return `<div class="lock">🔒 이 상점 포인트로 구매하면 바로 잠금이 풀려요</div><br>
+<div class="card"><span class="sub">${esc(shop.name)} 포인트 (1P = 1원, 이 상점에서만 사용)</span><br><b>${pts(bal)}</b>
+${bal >= price ? `<form method="post" action="/i/${item.id}/buy" onsubmit="return confirm('${price.toLocaleString('ko-KR')}P를 사용해 구매할까요?')"><button>${pts(price)}로 구매하기</button></form>` : `<p class="warn">포인트가 ${pts(price - bal)} 부족해요</p>`}
+${canCharge ? `<a href="/w/${shop.id}">이 상점 포인트 충전하기</a>` : '<p class="sub">이 상점은 아직 충전을 받지 않아요</p>'}</div>`;
+};
 const payBlock = (item, shop) => {
   const hasDep = !!(shop && shop.bank && shop.account);
   if (!useToss && !hasDep) return `<div class="lock">🔒 결제하면 바로 잠금이 풀려요</div><br>
@@ -218,7 +325,7 @@ async function currentUser(req) {
   const [uid, exp, sig] = c.split('.');
   if (!uid || !exp || !sig || Number(exp) < Date.now()) return null;
   const user = await store.userById(uid);
-  if (!user) return null;
+  if (!user || user.banned) return null;
   const good = sign(uid + '.' + exp + '.' + pwTag(user));
   if (sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) return null;
   return user;
@@ -289,16 +396,48 @@ const verifyPage = (res, t, next, email, err) => send(res, 200, page('인증 코
 <button>가입 완료</button></form>
 <p class="sub"><a href="/login?next=${enc(next)}">처음부터 다시</a></p>`));
 
-// 관리 권한: 주인이 있는 상점은 로그인한 주인만, 주인이 없는 옛 상점은 관리 주소만으로
+// ---------- 포인트 · 관리자 설정 ----------
+const ADMIN_LIST = (process.env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+const isAdmin = (u) => !!u && useMail && ADMIN_LIST.includes(String(u.email).toLowerCase()); // 이메일 인증이 켜져 있어야 관리자 권한 동작(남이 먼저 가입해 가로채는 것 방지)
+const CHARGE_TTL = 24 * 3600 * 1000;
+const MIN_CHARGE = 1000; const MAX_CHARGE = 500000;
+const pts = (n) => Number(n || 0).toLocaleString('ko-KR') + 'P';
+const fmtDate = (t) => new Date(Number(t)).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+const SEL_STYLE = 'width:100%;padding:12px;border:1px solid #d9dce1;border-radius:10px;font-size:15px;margin:4px 0 10px';
+const badgeHtml = (name) => `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:#eef0ff;color:#4338ca;font-size:13px;margin:2px">${esc(name)}</span>`;
+const titleSelect = (titles, cur) => (titles.length ? `<select name="title_id" style="${SEL_STYLE}"><option value="">구매 시 지급할 칭호 없음</option>${titles.map((t) => `<option value="${t.id}" ${t.id === cur ? 'selected' : ''}>🏷️ ${esc(t.name)} 자동 지급</option>`).join('')}</select>` : '');
+
+// 관리 권한: 링크가 아니라 로그인한 상점 주인(또는 운영자)만
 async function manageShop(req, res, key) {
   const shop = await store.shopByKey(key);
   if (!shop) { notFound(res, '상점을 찾을 수 없어요'); return null; }
-  if (shop.owner) {
-    const u = await currentUser(req);
-    if (!u) { redirect(res, '/login?next=' + enc('/m/' + shop.key)); return null; }
-    if (u.id !== shop.owner) { send(res, 403, page('권한 없음', '<h1>이 상점의 주인이 아니에요</h1>')); return null; }
-  }
+  const u = await currentUser(req);
+  if (!u) { redirect(res, '/login?next=' + enc('/m/' + shop.key)); return null; }
+  if (isAdmin(u)) return shop;
+  if (!shop.owner) { redirect(res, '/claim/' + shop.key); return null; }
+  if (u.id !== shop.owner) { send(res, 403, page('권한 없음', '<h1>이 상점의 주인이 아니에요</h1>')); return null; }
   return shop;
+}
+async function adminOnly(req, res) {
+  const u = await currentUser(req);
+  if (!u) { redirect(res, '/login?next=/admin'); return null; }
+  if (!isAdmin(u)) { send(res, 403, page('권한 없음', '<h1>운영자만 볼 수 있어요</h1>')); return null; }
+  return u;
+}
+
+// 충전 확인: 한 번만 포인트 지급(상태를 waiting→done으로 바꾼 쪽만 지급). 포인트는 그 상점 전용
+async function confirmCharge(ch) {
+  if (!ch.shop) return false;
+  if (!(await store.claimCharge(ch.token, 'done'))) return false;
+  const bal = await store.addShopPoints(ch.user_id, ch.shop, Number(ch.amount));
+  if (bal == null) { console.error('충전 지급 실패', ch.token); return false; }
+  await store.addLedger({ id: rid(9), user_id: ch.user_id, shop: ch.shop, delta: Number(ch.amount), kind: 'charge', ref: ch.token, note: '충전', created: Date.now() });
+  return true;
+}
+// 꺼낸 재고 한 줄을 되돌림
+async function restoreStock(itemId, line) {
+  const it = await store.itemById(itemId);
+  if (it) await store.updateItem(itemId, { stock: [line, ...stockLines(it.stock)].join('\n'), ...(useSB ? { stock_ver: (it.stock_ver || 0) + 1 } : {}) });
 }
 
 // 주문 생성 + 재고형 아이템이면 한 줄을 꺼내 구매자에게 지급
@@ -380,8 +519,7 @@ route('GET', /^\/$/, async (req, res) => {
   const u = await currentUser(req);
   send(res, 200, page('링크몰', `
 <h1>🔗 링크몰</h1><p class="sub">링크 하나로 팔고, 결제되면 자동으로 열려요.</p>
-<div class="card">${u ? '<a class="btn" href="/my">내 상점으로 가기</a>' : '<a class="btn" href="/login">로그인 · 가입하고 상점 만들기</a>'}</div>
-${useToss ? '' : '<p class="warn">⚠️ 테스트 결제 모드인 상점은 실제 돈이 오가지 않아요.</p>'}`));
+<div class="card">${u ? '<a class="btn" href="/my">내 상점으로 가기</a>' : '<a class="btn" href="/login">로그인 · 가입하고 상점 만들기</a>'}</div>`));
 });
 
 route('GET', /^\/login$/, async (req, res) => {
@@ -462,6 +600,7 @@ route('POST', /^\/login$/, async (req, res) => {
   if (locked(email)) return back(lockMsg(email));
   const user = await store.userByEmail(email);
   if (!user || !checkPw(String(f.pw || '').slice(0, 100), user.pw)) { addFail(email); return back('이메일 또는 비밀번호가 맞지 않아요'); }
+  if (user.banned) return back('정지된 계정이에요');
   fails.delete(email);
   redirect(res, safeNext(f.next), { 'Set-Cookie': sessionCookie(user) });
 });
@@ -505,6 +644,7 @@ route('GET', /^\/my$/, async (req, res) => {
   if (!u) return redirect(res, '/login?next=/my');
   const shops = await store.shopsByOwner(u.id);
   send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
+<div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
 <form class="card" method="post" action="/shops"><b>새 상점 만들기</b><br>
 <input name="name" placeholder="상점 이름" required maxlength="40">
@@ -530,25 +670,32 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   const total = orders.reduce((s, o) => s + o.price, 0);
   const waiting = await store.waitingDeposits(shop.id);
   const me = await currentUser(req);
-  const smsUrl = shop.sms_token ? `${BASE}/sms/${shop.sms_token}` : '';
+  const titles = await store.titlesByShop(shop.id);
+  const holders = {};
+  for (const t of titles) holders[t.id] = await store.titleHolders(t.id);
+  const charges = await store.shopCharges(shop.id);
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
-<div class="warn">관리 주소는 비밀번호와 같아요. 북마크하고 공유하지 마세요: <code>${BASE}/m/${shop.key}</code></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
-<h2>⏳ 입금 대기 ${waiting.length}건</h2>
-${waiting.map((d) => { const it = items.find((x) => x.id === d.item); return `<div class="card"><b>${esc(d.name)}</b> <span class="price">${won(d.amount)}</span><br><span class="sub">${esc(it ? it.title : '')}${Date.now() > d.created + DEP_TTL ? ' · 기한 지남' : ''}${it && it.stock != null && !stockLines(it.stock).length ? ' · ⚠️ 재고 없음(환불 필요)' : ''}</span>
-<form method="post" action="/m/${shop.key}/deposits/${d.token}/confirm"><button>입금 확인</button></form></div>`; }).join('') || '<p class="sub">입금 대기 중인 주문이 없어요</p>'}
-<h2>🏦 계좌 입금 받기</h2>
+<h2>🏷️ 칭호</h2>
+<form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
+${titles.map((t) => `<div class="card">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span>
+<form method="post" action="/m/${shop.key}/titles/${t.id}/grant"><input name="code" placeholder="회원번호 8자리 (구매자 지갑에 표시)" required minlength="8" maxlength="12"><button>칭호 주기</button></form>
+${(holders[t.id] || []).map((h) => `<form method="post" action="/m/${shop.key}/titles/${t.id}/revoke" style="display:inline"><input type="hidden" name="uid" value="${esc(h.user_id)}"><span class="sub">${esc(h.user_id.slice(0, 8))}</span> <button style="width:auto;padding:4px 10px;background:#6b7280">회수</button></form> `).join('')}
+<form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button style="background:#dc2626">칭호 삭제</button></form></div>`).join('') || '<p class="sub">아직 칭호가 없어요</p>'}
+<h2>🏦 충전 받을 계좌</h2>
 <form class="card" method="post" action="/m/${shop.key}/pay">
 <input name="bank" placeholder="은행 (예: 카카오뱅크)" value="${esc(shop.bank)}" maxlength="20">
 <input name="account" placeholder="계좌번호" value="${esc(shop.account)}" maxlength="40">
 <input name="holder" placeholder="예금주" value="${esc(shop.holder)}" maxlength="20">
-<select name="pay_mode" style="width:100%;padding:12px;border:1px solid #d9dce1;border-radius:10px;font-size:15px;margin:4px 0 10px"><option value="manual" ${shop.pay_mode !== 'auto' ? 'selected' : ''}>수동 확인 (내가 입금 확인 버튼을 누름)</option><option value="auto" ${shop.pay_mode === 'auto' ? 'selected' : ''}>자동 확인 (입금 문자 인식)</option></select>
-<button>저장</button>
-<p class="sub">은행·계좌번호·예금주를 모두 적으면 아이템 페이지에 계좌 입금이 열려요. 비우면 꺼져요.</p></form>
-${shop.pay_mode === 'auto' && smsUrl ? `<div class="card"><b>📩 문자 자동 인식 주소 (비밀!)</b><br><code>${smsUrl}</code>
-<p class="sub">안드로이드에서 MacroDroid 같은 자동화 앱으로 "문자 수신 → HTTP 요청(POST), 본문에 문자 내용" 규칙을 만들고 위 주소를 넣으세요. 입금 문자의 이름과 금액이 대기 주문과 맞으면 자동으로 열어줘요. 못 맞추면 위 입금 대기에서 직접 확인하세요.</p></div>` : ''}
+<button>저장</button><p class="sub">구매자가 이 상점 포인트를 충전할 때 이 계좌가 보여요. 은행·계좌번호·예금주를 모두 적어야 충전이 열리고, 비우면 꺼져요. 입금은 직접 확인해서 승인해요.</p></form>
+<h2>⏳ 충전 대기 ${charges.length}건</h2>
+${charges.map((c) => `<div class="card"><b>${esc(c.name)}</b> <span class="price">${won(c.amount)}</span><br><span class="sub">회원 ${esc(c.user_id.slice(0, 8))} · ${fmtDate(c.created)}${Date.now() > c.created + CHARGE_TTL ? ' · 기한 지남' : ''}</span>
+<form method="post" action="/m/${shop.key}/charges/${c.token}/confirm"><button>입금 확인 (포인트 지급)</button></form>
+<form method="post" action="/m/${shop.key}/charges/${c.token}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">충전 대기가 없어요</p>'}
+<h2>🎁 포인트 직접 조정</h2>
+<form class="card" method="post" action="/m/${shop.key}/points"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><input name="delta" type="number" placeholder="증감 (예: 1000 또는 -500)" required><input name="note" placeholder="메모 (선택)" maxlength="40"><button>조정</button></form>
 <h2>매출 ${won(total)} · 판매 ${orders.length}건</h2>
 <h2>아이템 추가</h2>
 <form class="card" method="post" action="/m/${shop.key}/items">
@@ -557,6 +704,7 @@ ${shop.pay_mode === 'auto' && smsUrl ? `<div class="card"><b>📩 문자 자동 
 <textarea name="preview" placeholder="미리보기 (결제 전 공개되는 설명)" required></textarea>
 <textarea name="secret" placeholder="잠금 정보 (결제 후에만 공개: 내용, 링크 등). 재고를 쓰면 비워도 돼요"></textarea>
 <textarea name="stock" placeholder="재고 (선택). 한 줄에 하나씩 적으면 구매할 때마다 한 줄씩 순서대로 지급돼요. 예) 치킨버거 ⏎ 불고기버거. 비우면 재고 제한 없이 같은 잠금 정보를 보여줘요"></textarea>
+${titleSelect(titles, '')}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" checked style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>등록</button></form>
 <h2>내 아이템</h2>
@@ -574,6 +722,7 @@ route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
   if (!secret.trim() && !stock) return send(res, 400, page('오류', '<h1>잠금 정보나 재고 중 하나는 적어주세요</h1>'));
   const item = { id: rid(9), shop: shop.id, pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret, created: Date.now() };
   if (stock) item.stock = stock;
+  if (f.title_id) { const t = await store.titleById(String(f.title_id)); if (t && t.shop === shop.id) item.title_id = t.id; }
   await store.createItem(item);
   redirect(res, `/m/${shop.key}`);
 });
@@ -584,6 +733,7 @@ route('GET', /^\/m\/([\w-]+)\/items\/([\w-]+)\/edit$/, async (req, res, m) => {
   const item = await store.itemById(m[2]);
   if (!item || item.shop !== shop.id) return notFound(res, '아이템을 찾을 수 없어요');
   const sold = (await store.ordersForItems([item.id])).length;
+  const titles = await store.titlesByShop(shop.id);
   send(res, 200, page('아이템 수정', `<a class="sub" href="/m/${shop.key}">← 관리로 돌아가기</a>
 <h1>아이템 수정</h1>
 ${sold ? `<p class="warn">이미 ${sold}건 팔렸어요. 가격을 바꿔도 이전 주문 금액은 그대로이고, 잠금 정보를 바꾸면 이전 구매자에게도 바뀐 내용이 보여요.</p>` : ''}
@@ -594,6 +744,7 @@ ${sold ? `<p class="warn">이미 ${sold}건 팔렸어요. 가격을 바꿔도 �
 <textarea name="secret" placeholder="잠금 정보 (재고를 쓰면 비워도 돼요)">${esc(item.secret)}</textarea>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="use_stock" ${item.stock != null ? 'checked' : ''} style="width:auto;margin:0"> 재고 사용 (한 줄에 하나, 구매할 때마다 순서대로 지급)</label>
 <textarea name="stock" placeholder="남은 재고 (한 줄에 하나)">${esc(item.stock || '')}</textarea>
+${titleSelect(titles, item.title_id)}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" ${item.pub ? 'checked' : ''} style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>저장</button></form>
 <h2>삭제</h2>
@@ -615,6 +766,9 @@ route('POST', /^\/m\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m) => {
   if (!secret.trim() && !useStock) return send(res, 400, page('오류', '<h1>잠금 정보나 재고 중 하나는 적어주세요</h1>'));
   const upd = { pub: f.pub === 'on', title: String(f.title).slice(0, 80), price, preview: String(f.preview).slice(0, 2000), secret };
   if (useStock || item.stock != null) { upd.stock = stock; upd.stock_ver = (item.stock_ver || 0) + 1; }
+  let tid = null;
+  if (f.title_id) { const t = await store.titleById(String(f.title_id)); if (t && t.shop === shop.id) tid = t.id; }
+  if (tid || item.title_id) upd.title_id = tid;
   await store.updateItem(item.id, upd);
   redirect(res, `/m/${shop.key}`);
 });
@@ -642,8 +796,7 @@ route('POST', /^\/m\/([\w-]+)\/pay$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
   const f = await readForm(req);
-  const upd = { bank: str(f.bank, 20), account: str(f.account, 40), holder: str(f.holder, 20), pay_mode: f.pay_mode === 'auto' ? 'auto' : 'manual' };
-  if (upd.pay_mode === 'auto' && !shop.sms_token) upd.sms_token = rid(24);
+  const upd = { bank: str(f.bank, 20), account: str(f.account, 40), holder: str(f.holder, 20) };
   await store.updateShop(shop.id, upd);
   redirect(res, `/m/${shop.key}`);
 });
@@ -693,11 +846,205 @@ route('POST', /^\/sms\/([\w-]+)$/, async (req, res, m) => {
   res.writeHead(200); res.end(result);
 });
 
+route('GET', /^\/claim\/([\w-]+)$/, async (req, res, m) => {
+  const shop = await store.shopByKey(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/claim/' + shop.key));
+  if (shop.owner) return send(res, 403, page('이미 주인이 있어요', '<h1>이미 주인이 있는 상점이에요</h1>'));
+  send(res, 200, page('상점 연결', `<h1>${esc(shop.name)}</h1><p class="sub">이 상점을 내 계정(${esc(u.email)})에 연결할까요? 연결하면 로그인한 나만 관리할 수 있어요.</p><form method="post" action="/m/${shop.key}/claim"><button>내 계정에 연결</button></form>`));
+});
+
+// 이 상점 포인트로 구매
+route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/i/' + m[1]));
+  const item = await store.itemById(m[1]);
+  if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const price = Number(item.price);
+  const soldOut = () => send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
+  let line = null;
+  if (item.stock != null) { line = await store.popStock(item.id); if (line == null) return soldOut(); }
+  const bal = await store.addShopPoints(u.id, item.shop, -price);
+  if (bal == null) {
+    if (line != null) await restoreStock(item.id, line);
+    return send(res, 400, page('포인트 부족', `<h1>이 상점 포인트가 부족해요</h1><p><a href="/w/${item.shop}">충전하러 가기</a></p>`));
+  }
+  const order = { token: rid(16), item: item.id, price, paidAt: Date.now(), ...(line != null ? { delivered: line } : {}) };
+  try { await store.createOrder(order); }
+  catch (e) { await store.addShopPoints(u.id, item.shop, price); if (line != null) await restoreStock(item.id, line); throw e; }
+  try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -price, kind: 'buy', ref: order.token, note: item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
+  if (item.title_id) { const t = await store.titleById(item.title_id); if (t) await store.grantTitle(u.id, t.id, item.shop); }
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(price)})`);
+  redirect(res, `/o/${order.token}`);
+});
+
+// 내 포인트 · 칭호 (상점별 목록)
+route('GET', /^\/wallet$/, async (req, res) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=/wallet');
+  const rows = await store.userShopPoints(u.id);
+  const titles = await store.userTitles(u.id);
+  const cards = [];
+  for (const r of rows) { const sh = await store.shopById(r.shop); if (sh) cards.push(`<a href="/w/${sh.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(sh.name)}</b><br><span class="price">${pts(r.points)}</span></div></a>`); }
+  send(res, 200, page('내 포인트', `<a class="sub" href="/my">← 내 상점</a><h1>💰 내 포인트</h1><p class="sub">포인트는 충전한 상점에서만 쓸 수 있어요 (1P = 1원). 회원번호 <b>${esc(u.id.slice(0, 8))}</b> · 칭호를 받을 때 판매자에게 알려주세요.</p>
+${titles.length ? `<div class="card"><b>🏷️ 내 칭호</b><br>${titles.map((t) => badgeHtml(t.name)).join('')}</div>` : ''}
+<h2>상점별 포인트</h2>
+${cards.join('') || '<p class="sub">아직 충전한 상점이 없어요. 상점 페이지에서 포인트를 충전해 보세요.</p>'}`));
+});
+
+// 상점 전용 지갑: 충전 신청 / 입금 안내 / 내역
+route('GET', /^\/w\/([\w-]+)$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/w/' + shop.id));
+  const q = new URL(req.url, BASE).searchParams;
+  const canCharge = !!(shop.bank && shop.account && shop.holder);
+  const bal = await store.shopPoints(u.id, shop.id);
+  const pending = (await store.userShopCharges(u.id, shop.id)).filter((c) => Date.now() <= c.created + CHARGE_TTL);
+  const log = await store.ledgerForUserShop(u.id, shop.id);
+  const label = { charge: '충전', buy: '구매', admin: '상점 조정' };
+  send(res, 200, page(shop.name + ' 포인트', `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a><h1>💰 ${esc(shop.name)} 포인트</h1>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+<div class="card"><span class="sub">보유 포인트 (1P = 1원 · 이 상점에서만 사용)</span><br><span class="price" style="font-size:28px">${pts(bal)}</span></div>
+<h2>포인트 충전</h2>
+${canCharge ? `<form class="card" method="post" action="/w/${shop.id}/charge">
+<input name="amount" type="number" min="${MIN_CHARGE}" max="${MAX_CHARGE}" step="100" placeholder="충전 금액 (${MIN_CHARGE.toLocaleString('ko-KR')}원 이상)" required>
+<input name="name" placeholder="입금자명 (은행 앱에 찍히는 내 이름)" required minlength="2" maxlength="20">
+<button>충전 신청</button><p class="sub">신청 후 아래 계좌로 입금하면, 상점 운영자가 입금을 확인한 뒤 포인트가 들어와요. 충전한 포인트는 환불되지 않아요.</p></form>` : '<p class="warn">이 상점은 아직 충전을 받지 않아요</p>'}
+${pending.map((c) => `<div class="card"><b>입금해 주세요</b><br>${esc(shop.bank)} <b>${esc(shop.account)}</b> (예금주 ${esc(shop.holder)})<br><span class="price">${won(c.amount)}</span><br><span class="sub">입금자명 <b>${esc(c.name)}</b> 그대로 · 기한 ${fmtDate(c.created + CHARGE_TTL)}<br>운영자가 확인하면 포인트가 들어와요 (20초마다 자동 확인)</span>
+<form method="post" action="/w/${shop.id}/charge/${c.token}/cancel"><button style="background:#6b7280">신청 취소</button></form></div>`).join('')}
+${pending.length ? '<script>setTimeout(function(){location.reload()},20000)</script>' : ''}
+<h2>내역</h2>
+${log.map((l) => `<div class="card"><span class="sub">${fmtDate(l.created)}</span><br>${l.kind === 'buy' ? `<a href="/o/${esc(l.ref)}">${esc(label.buy)} · ${esc(l.note)}</a>` : `${esc(label[l.kind] || l.kind)}${l.note && l.kind === 'admin' ? ' · ' + esc(l.note) : ''}`} <b>${l.delta > 0 ? '+' : ''}${Number(l.delta).toLocaleString('ko-KR')}P</b></div>`).join('') || '<p class="sub">아직 내역이 없어요</p>'}`));
+});
+
+route('POST', /^\/w\/([\w-]+)\/charge$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/w/' + shop.id));
+  const f = await readForm(req);
+  const back = (k, t) => redirect(res, `/w/${shop.id}?${k}=${enc(t)}`);
+  if (!(shop.bank && shop.account && shop.holder)) return back('e', '이 상점은 아직 충전을 받지 않아요');
+  const amount = parseInt(f.amount, 10);
+  const name = str(f.name, 20);
+  if (!(amount >= MIN_CHARGE && amount <= MAX_CHARGE)) return back('e', `충전 금액은 ${MIN_CHARGE.toLocaleString('ko-KR')}원~${MAX_CHARGE.toLocaleString('ko-KR')}원이에요`);
+  if (name.length < 2) return back('e', '입금자명을 2자 이상 적어주세요');
+  const active = (await store.userShopCharges(u.id, shop.id)).filter((c) => Date.now() <= c.created + CHARGE_TTL);
+  if (active.length >= 3) return back('e', '입금 대기 중인 신청이 3건이에요. 하나를 취소하거나 입금한 뒤에 신청해 주세요');
+  await store.createCharge({ token: rid(12), user_id: u.id, shop: shop.id, amount, name, status: 'waiting', created: Date.now() });
+  await notify(shop, `⏳ 충전 신청: ${name} · ${won(amount)} — 입금을 확인하고 관리 페이지에서 승인해 주세요`);
+  back('m', '충전 신청이 접수됐어요. 아래 계좌로 입금해 주세요');
+});
+
+route('POST', /^\/w\/([\w-]+)\/charge\/([\w-]+)\/cancel$/, async (req, res, m) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/w/' + m[1]));
+  const c = await store.chargeByToken(m[2]);
+  if (c && c.user_id === u.id && c.shop === m[1]) await store.claimCharge(c.token, 'cancelled');
+  redirect(res, `/w/${m[1]}`);
+});
+
+// 상점 운영자: 충전 승인/거절, 포인트 직접 조정
+route('POST', /^\/m\/([\w-]+)\/charges\/([\w-]+)\/(confirm|reject)$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const c = await store.chargeByToken(m[2]);
+  if (c && c.shop === shop.id) { if (m[3] === 'confirm') await confirmCharge(c); else await store.claimCharge(c.token, 'rejected'); }
+  redirect(res, `/m/${shop.key}`);
+});
+
+route('POST', /^\/m\/([\w-]+)\/points$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const f = await readForm(req);
+  const back = (msg) => send(res, 400, page('오류', `<h1>${esc(msg)}</h1><p><a href="/m/${shop.key}">돌아가기</a></p>`));
+  const code = str(f.code, 12);
+  const delta = parseInt(f.delta, 10);
+  if (!/^[\w-]{8,12}$/.test(code)) return back('회원번호는 8자리예요');
+  if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 10000000) return back('증감 금액이 올바르지 않아요');
+  const target = await store.userByCode(code);
+  if (!target) return back('그 회원번호의 사용자를 찾을 수 없어요');
+  const bal = await store.addShopPoints(target.id, shop.id, delta);
+  if (bal == null) return back('보유 포인트보다 많이 차감할 수 없어요');
+  await store.addLedger({ id: rid(9), user_id: target.id, shop: shop.id, delta, kind: 'admin', ref: shop.id, note: str(f.note, 40), created: Date.now() });
+  redirect(res, `/m/${shop.key}`);
+});
+
+// 칭호 만들기 / 주기 / 회수 / 삭제 (상점 주인)
+route('POST', /^\/m\/([\w-]+)\/titles$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const f = await readForm(req);
+  const name = str(f.name, 20);
+  const back = (msg) => send(res, 400, page('오류', `<h1>${esc(msg)}</h1><p><a href="/m/${shop.key}">돌아가기</a></p>`));
+  if (!name) return back('칭호 이름을 적어주세요');
+  if ((await store.titlesByShop(shop.id)).length >= 30) return back('칭호는 상점당 30개까지 만들 수 있어요');
+  await store.createTitle({ id: rid(6), shop: shop.id, name, created: Date.now() });
+  redirect(res, `/m/${shop.key}`);
+});
+
+route('POST', /^\/m\/([\w-]+)\/titles\/([\w-]+)\/(grant|revoke|delete)$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const t = await store.titleById(m[2]);
+  if (!t || t.shop !== shop.id) return notFound(res, '칭호를 찾을 수 없어요');
+  const f = await readForm(req);
+  const back = (msg) => send(res, 400, page('오류', `<h1>${esc(msg)}</h1><p><a href="/m/${shop.key}">돌아가기</a></p>`));
+  if (m[3] === 'delete') await store.deleteTitle(t.id);
+  else if (m[3] === 'revoke') { const uid = str(f.uid, 12); if (/^[\w-]{8,12}$/.test(uid)) await store.revokeTitle(uid, t.id); }
+  else {
+    const code = str(f.code, 12);
+    if (!/^[\w-]{8,12}$/.test(code)) return back('회원번호는 8자리예요');
+    const target = await store.userByCode(code);
+    if (!target) return back('그 회원번호의 사용자를 찾을 수 없어요');
+    await store.grantTitle(target.id, t.id, shop.id);
+  }
+  redirect(res, `/m/${shop.key}`);
+});
+
+// 운영자 페이지: 모든 사용자 정지/해제, 모든 상점 관리 진입
+route('GET', /^\/admin$/, async (req, res) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const q = new URL(req.url, BASE).searchParams;
+  const search = str(q.get('q'), 50);
+  const users = await store.listUsers(search);
+  const shops = await store.allShops();
+  const emailMap = new Map(users.map((x) => [x.id, x.email]));
+  const emailOf = (id) => emailMap.get(id) || (id ? id.slice(0, 8) : '없음');
+  send(res, 200, page('운영자', `<a class="sub" href="/my">← 내 상점</a><h1>👑 운영자</h1>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+<h2>🏪 상점 (${shops.length})</h2>
+${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b><br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a> · <a href="/s/${sh.id}">보기</a></div>`).join('') || '<p class="sub">상점이 없어요</p>'}
+<h2>👥 사용자</h2>
+<form method="get" action="/admin"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
+${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
+${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+});
+
+route('POST', /^\/admin\/users\/([\w-]+)\/ban$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const f = await readForm(req);
+  const done = (k, t) => redirect(res, `/admin?${k}=${enc(t)}`);
+  const target = await store.userById(m[1]);
+  if (!target) return done('e', '사용자를 찾을 수 없어요');
+  if (isAdmin(target)) return done('e', '운영자 계정은 정지할 수 없어요');
+  await store.updateUser(target.id, { banned: f.v === '1' });
+  done('m', f.v === '1' ? '계정을 정지했어요' : '정지를 풀었어요');
+});
+
 route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
   const shop = await store.shopById(m[1]);
   if (!shop) return notFound(res, '상점을 찾을 수 없어요');
   const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
+  const me = await currentUser(req);
+  const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
   send(res, 200, page(shop.name, `<h1>${esc(shop.name)}</h1><p class="sub">링크몰 상점</p>
+<div class="card">${me ? `💰 이 상점 포인트 <b>${pts(bal)}</b> · <a href="/w/${shop.id}">충전하기</a>` : `<a href="/login?next=${enc('/s/' + shop.id)}">로그인하고 포인트 충전하기</a>`}</div>
 ${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span>${i.stock != null ? (stockLines(i.stock).length ? ` <span class="sub">재고 ${stockLines(i.stock).length}개</span>` : ' <span class="sub">품절</span>') : ''}</div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
 });
 
@@ -706,16 +1053,17 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const shop = await store.shopById(item.shop);
   const sold = (await store.ordersForItems([item.id])).length;
+  const me = await currentUser(req);
+  const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
   send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
 <h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건${item.stock != null ? ` · 재고 ${stockLines(item.stock).length}개` : ''}</p>
 <div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
-${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : payBlock(item, shop)}`));
+${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}`));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
 route('POST', /^\/i\/([\w-]+)\/pay$/, async (req, res, m) => {
-  { const it0 = await store.itemById(m[1]); const sh0 = it0 && await store.shopById(it0.shop);
-    if (useToss || (sh0 && sh0.bank && sh0.account)) return send(res, 403, page('막힘', '<h1>테스트 결제는 꺼져 있어요</h1>')); }
+  return send(res, 403, page('막힘', '<h1>이제 포인트로만 구매할 수 있어요</h1>'));
   const item = await store.itemById(m[1]);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
