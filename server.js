@@ -59,7 +59,7 @@ const sbStore = {
   async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
   async updateUser(id, f) { await sbPatch('users', `id=eq.${enc(id)}`, f); },
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
-  async listUsers(q) { return sbGet('users', `select=id,email,points,banned,created&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
+  async listUsers(q) { return sbGet('users', `select=id,email,banned,created&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
   async allShops() { return sbGet('shops', 'select=*&order=created.desc&limit=200'); },
   // 포인트 증감: points가 읽은 값 그대로일 때만 갱신(동시 결제에도 잔액이 틀어지지 않음). 잔액 부족이면 null
   async addPoints(uid, delta) {
@@ -180,7 +180,7 @@ const fileStore = {
   async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
   async updateUser(id, f) { const d = L(); if (d.users[id]) Object.assign(d.users[id], f); save(d); },
   async userByCode(c) { const r = Object.values(L().users).filter((u) => u.id.startsWith(c)); return r.length === 1 ? r[0] : null; },
-  async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, points: u.points || 0, banned: !!u.banned, created: u.created })); },
+  async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, banned: !!u.banned, created: u.created })); },
   async allShops() { return Object.values(L().shops).sort((a, b) => b.created - a.created); },
   async addPoints(uid, delta) { const d = L(); const u = d.users[uid]; if (!u) return null; const np = Number(u.points || 0) + delta; if (np < 0) return null; u.points = np; save(d); return np; },
   async addEarned(shopId, delta) { const d = L(); const sh = d.shops[shopId]; if (!sh) return null; sh.earned = Math.max(0, Number(sh.earned || 0) + delta); save(d); return sh.earned; },
