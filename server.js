@@ -45,7 +45,13 @@ const sbStore = {
   async shopsByOwner(uid) { return sbGet('shops', `owner=eq.${enc(uid)}&select=*&order=created.desc`); },
   async shopBySms(t) { return (await sbGet('shops', `sms_token=eq.${enc(t)}&select=*`))[0]; },
   async createUser(u) { await sbInsert('users', u); },
-  async userByEmail(e) { return (await sbGet('users', `email=eq.${enc(e)}&select=*`))[0]; },
+  async userByEmail(e) {
+    const hit = (await sbGet('users', `email=eq.${enc(e)}&select=*`))[0];
+    if (hit) return hit;
+    // 예전 버전에서 대문자 그대로 저장된 이메일도 찾기 (_ % 는 와일드카드라 이스케이프, 결과는 소문자로 다시 비교)
+    const pat = e.replace(/[\\%_]/g, (c) => '\\' + c);
+    return (await sbGet('users', `email=ilike.${enc(pat)}&select=*&limit=5`)).find((u) => String(u.email).toLowerCase() === e);
+  },
   async userById(id) { return (await sbGet('users', `id=eq.${enc(id)}&select=*`))[0]; },
   async createDeposit(d) { await sbInsert('deposits', d); },
   async depositByToken(t) { return (await sbGet('deposits', `token=eq.${enc(t)}&select=*`))[0]; },
@@ -58,6 +64,14 @@ const sbStore = {
   async updateItem(id, f) { await sbPatch('items', `id=eq.${enc(id)}`, f); },
   async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
   async updateUser(id, f) { await sbPatch('users', `id=eq.${enc(id)}`, f); },
+  async deleteUser(id) { // 회원 탈퇴: 이 회원의 포인트·칭호·대기 중 충전·상점 추가 신청을 지우고 계정 삭제 (주문·후기 기록은 번호만 남김)
+    const e = enc(id);
+    await sbDelete('shop_points', `user_id=eq.${e}`);
+    await sbDelete('user_titles', `user_id=eq.${e}`);
+    await sbDelete('charges', `user_id=eq.${e}&status=eq.waiting`);
+    await sbDelete('shop_requests', `user_id=eq.${e}`);
+    await sbDelete('users', `id=eq.${e}`);
+  },
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
   async listUsers(q) { return sbGet('users', `select=id,email,banned,created,extra_shops&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
   async allShops() { return sbGet('shops', 'select=*&order=created.desc&limit=200'); },
@@ -182,7 +196,7 @@ const fileStore = {
   async shopsByOwner(uid) { return Object.values(L().shops).filter((s) => s.owner === uid).sort((a, b) => b.created - a.created); },
   async shopBySms(t) { return Object.values(L().shops).find((s) => s.sms_token === t); },
   async createUser(u) { const d = L(); d.users[u.id] = u; save(d); },
-  async userByEmail(e) { return Object.values(L().users).find((u) => u.email === e); },
+  async userByEmail(e) { return Object.values(L().users).find((u) => String(u.email).toLowerCase() === e); },
   async userById(id) { return L().users[id]; },
   async createDeposit(x) { const d = L(); d.deposits[x.token] = x; save(d); },
   async depositByToken(t) { return L().deposits[t]; },
@@ -196,6 +210,15 @@ const fileStore = {
   async updateItem(id, f) { const d = load(); if (d.items[id]) Object.assign(d.items[id], f); save(d); },
   async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
   async updateUser(id, f) { const d = L(); if (d.users[id]) Object.assign(d.users[id], f); save(d); },
+  async deleteUser(id) {
+    const d = L();
+    for (const k of Object.keys(d.shop_points)) if (k.startsWith(id + '|')) delete d.shop_points[k];
+    d.user_titles = d.user_titles.filter((x) => x.user_id !== id);
+    for (const [k, c] of Object.entries(d.charges)) if (c.user_id === id && c.status === 'waiting') delete d.charges[k];
+    delete d.shop_requests[id];
+    delete d.users[id];
+    save(d);
+  },
   async userByCode(c) { const r = Object.values(L().users).filter((u) => u.id.startsWith(c)); return r.length === 1 ? r[0] : null; },
   async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, banned: !!u.banned, created: u.created, extra_shops: u.extra_shops || 0 })); },
   async allShops() { return Object.values(L().shops).sort((a, b) => b.created - a.created); },
@@ -1254,7 +1277,7 @@ ${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><butt
 <h2>👥 사용자</h2>
 <form method="get" action="/admin"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
 ${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
-${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" style="margin-top:8px"><span class="sub">🏪 상점 한도 (현재 ${shops.filter((sh) => sh.owner === x.id && !sh.deleted).length}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required><button>한도 저장</button><button name="reset" value="1" formnovalidate style="background:#6b7280;margin-top:6px">기본값(${FREE_SHOPS}개)으로</button></form><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" style="margin-top:8px"><span class="sub">🏪 상점 한도 (현재 ${shops.filter((sh) => sh.owner === x.id && !sh.deleted).length}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required><button>한도 저장</button><button name="reset" value="1" formnovalidate style="background:#6b7280;margin-top:6px">기본값(${FREE_SHOPS}개)으로</button></form><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d;margin-top:6px">회원 탈퇴시키기</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
 });
 
 route('POST', /^\/admin\/shops\/([\w-]+)\/(delete|restore)$/, async (req, res, m) => {
@@ -1289,6 +1312,22 @@ route('POST', /^\/admin\/users\/([\w-]+)\/limit$/, async (req, res, m) => {
   if (!(n >= 0 && n <= 100)) return done('e', '한도는 0~100 사이 숫자로 넣어주세요');
   await store.updateUser(target.id, { extra_shops: n - FREE_SHOPS });
   done('m', `${target.email} 상점 한도를 ${n}개로 정했어요`);
+});
+
+route('POST', /^\/admin\/users\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const done = (k, t) => redirect(res, `/admin?${k}=${enc(t)}`);
+  const target = await store.userById(m[1]);
+  if (!target) return done('e', '사용자를 찾을 수 없어요');
+  if (isAdmin(target)) return done('e', '운영자 계정은 탈퇴시킬 수 없어요');
+  try {
+    // 이 회원의 상점은 삭제 처리하고 주인 연결을 끊어요 (관리자 화면에서 복구는 가능)
+    const mine = await store.shopsByOwner(target.id);
+    for (const sh of mine) await store.updateShop(sh.id, { deleted: true, owner: null });
+    await store.deleteUser(target.id);
+    done('m', `${target.email} 회원을 탈퇴시켰어요${mine.length ? ` (상점 ${mine.length}개는 삭제 처리했어요)` : ''}`);
+  } catch (e) { console.error('회원 탈퇴 실패', e); done('e', '탈퇴 처리 중 문제가 생겼어요. 잠시 뒤 다시 해주세요'); }
 });
 
 route('POST', /^\/admin\/users\/([\w-]+)\/ban$/, async (req, res, m) => {
