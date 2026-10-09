@@ -341,7 +341,8 @@ const checkPw = (pw, stored) => {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 };
 const getCookies = (req) => Object.fromEntries(String(req.headers.cookie || '').split(';').map((c) => c.trim().split(/=(.*)/s).slice(0, 2)).filter((a) => a[0]));
-async function currentUser(req) {
+const currentUser = async (req) => (req._cu !== undefined ? req._cu : (req._cu = await currentUserRaw(req)));
+async function currentUserRaw(req) {
   const c = getCookies(req).sid;
   if (!c) return null;
   const [uid, exp, sig] = c.split('.');
@@ -417,6 +418,67 @@ const verifyPage = (res, t, next, email, err) => send(res, 200, page('인증 코
 <input name="pw" type="password" placeholder="사용할 비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
 <button>가입 완료</button></form>
 <p class="sub"><a href="/login?next=${enc(next)}">처음부터 다시</a></p>`));
+
+// ---------- 로봇 방지 (가입할 때만) ----------
+// TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY 가 있으면 Cloudflare "로봇이 아닙니다" 체크박스,
+// 없으면 내장 숫자 그림 퀴즈(설정 필요 없음)
+const TS_SITE = (process.env.TURNSTILE_SITE_KEY || '').trim();
+const TS_SECRET = (process.env.TURNSTILE_SECRET_KEY || '').trim();
+const useTurnstile = !!(TS_SITE && TS_SECRET);
+const DIGITS = {
+  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  3: ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  5: ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  6: ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  9: ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+};
+const capHash = (a) => crypto.createHmac('sha256', SESSION_SECRET).update('cap:' + a).digest('base64url');
+const usedCaps = new Map(); // 한 번 시도한 퀴즈는 다시 못 씀 (정답 돌려쓰기·무작위 대입 방지)
+const R = (a, b) => a + Math.random() * (b - a);
+function captchaHtml() {
+  if (useTurnstile) return `<div class="cf-turnstile" data-sitekey="${esc(TS_SITE)}" style="margin:6px 0 10px"></div><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`;
+  const ans = Array.from({ length: 5 }, () => crypto.randomInt(0, 10)).join('');
+  const p = Buffer.from(JSON.stringify({ c: capHash(ans), x: Date.now() + 5 * 60000 })).toString('base64url');
+  const tok = p + '.' + sign(p);
+  let g = '';
+  [...ans].forEach((d, i) => {
+    const cells = DIGITS[d].flatMap((row, y) => [...row].map((v, x) => (v === '1' ? `<rect x="${(x * 5 + R(-0.6, 0.6)).toFixed(1)}" y="${(y * 5 + R(-0.6, 0.6)).toFixed(1)}" width="5" height="5"/>` : '')));
+    g += `<g transform="translate(${12 + i * 34} ${R(8, 18).toFixed(1)}) rotate(${R(-14, 14).toFixed(1)} 12 17)" fill="hsl(${Math.floor(R(0, 360))} 55% 35%)">${cells.join('')}</g>`;
+  });
+  let noise = '';
+  for (let i = 0; i < 5; i++) noise += `<line x1="${R(0, 190).toFixed(0)}" y1="${R(0, 64).toFixed(0)}" x2="${R(0, 190).toFixed(0)}" y2="${R(0, 64).toFixed(0)}" stroke="hsl(${Math.floor(R(0, 360))} 40% 55%)" stroke-width="1.6"/>`;
+  return `<p class="sub" style="margin:8px 0 0">🤖 로봇이 아닙니다 확인 — 그림 속 숫자 5자리를 입력하세요</p>
+<svg viewBox="0 0 190 64" style="width:190px;max-width:100%;background:#f3f4f6;border-radius:10px;margin:6px 0;display:block">${g}${noise}</svg>
+<input type="hidden" name="ct" value="${tok}"><input name="cc" placeholder="숫자 5자리" inputmode="numeric" autocomplete="off" maxlength="5" required>
+<p class="sub" style="margin:0 0 10px"><a href="javascript:location.reload()">그림이 안 보이면 새로 받기</a></p>`;
+}
+async function captchaOk(f, req) {
+  if (useTurnstile) {
+    const resp = String(f['cf-turnstile-response'] || '');
+    if (!resp) return false;
+    try {
+      const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: new URLSearchParams({ secret: TS_SECRET, response: resp, remoteip: ip }) });
+      const d = await r.json();
+      return !!d.success;
+    } catch (e) { console.error('turnstile 오류', e.message); return false; }
+  }
+  const tok = readToken(f.ct);
+  if (!tok) return false;
+  const id = String(f.ct).split('.')[1];
+  if (usedCaps.has(id)) return false;
+  usedCaps.set(id, tok.x);
+  if (usedCaps.size > 500) for (const [k, x] of usedCaps) if (x < Date.now()) usedCaps.delete(k);
+  const a = Buffer.from(capHash(str(f.cc, 5)));
+  const b = Buffer.from(String(tok.c || ''));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+const CAP_FAIL = '로봇 확인에 실패했어요. 새 그림으로 다시 해주세요';
 
 // ---------- 포인트 · 관리자 설정 ----------
 const ADMIN_LIST = (process.env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
@@ -555,10 +617,12 @@ route('GET', /^\/login$/, async (req, res) => {
   const signup = useMail
     ? `<form class="card" method="post" action="/signup/start"><b>처음이면 가입</b><input type="hidden" name="next" value="${esc(next)}">
 <input name="email" type="email" placeholder="이메일" autocomplete="username" required maxlength="100">
+${captchaHtml()}
 <button>인증 코드 받기</button><p class="sub">이메일로 6자리 코드를 보내드려요.</p></form>`
     : `<form class="card" method="post" action="/signup"><b>처음이면 가입</b><input type="hidden" name="next" value="${esc(next)}">
 <input name="email" placeholder="이메일" autocomplete="username" required maxlength="100">
 <input name="pw" type="password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" required minlength="8" maxlength="100">
+${captchaHtml()}
 <button>가입하기</button></form>`;
   send(res, 200, page('로그인', `<h1>🔗 로그인</h1>${err ? `<p class="warn">${esc(err)}</p>` : ''}
 <form class="card" method="post" action="/login"><b>로그인</b><input type="hidden" name="next" value="${esc(next)}">
@@ -573,6 +637,7 @@ route('POST', /^\/signup\/start$/, async (req, res) => {
   const next = safeNext(f.next);
   const back = (e) => redirect(res, `/login?e=${enc(e)}&next=${enc(next)}`);
   if (!useMail) return back('이메일 인증이 설정되지 않았어요');
+  if (!(await captchaOk(f, req))) return back(CAP_FAIL);
   const email = str(f.email, 100).toLowerCase();
   if (!EMAIL_RE.test(email)) return back('이메일 형식이 아니에요');
   if (await store.userByEmail(email)) return back('이미 가입된 이메일이에요');
@@ -611,6 +676,7 @@ route('POST', /^\/signup$/, async (req, res) => {
   const email = str(f.email, 100).toLowerCase();
   const pw = String(f.pw || '');
   const back = (e) => redirect(res, `/login?e=${enc(e)}&next=${enc(safeNext(f.next))}`);
+  if (!(await captchaOk(f, req))) return back(CAP_FAIL);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return back('이메일 형식이 아니에요');
   if (pw.length < 8 || pw.length > 100) return back('비밀번호는 8자 이상이어야 해요');
   if (await store.userByEmail(email)) return back('이미 가입된 이메일이에요');
@@ -1279,8 +1345,19 @@ route('POST', /^\/i\/([\w-]+)\/reviews\/([\w-]+)\/delete$/, async (req, res, m) 
   redirect(res, `/i/${item.id}`);
 });
 
+// 로그인 없이 열어둘 곳: 첫 화면, 로그인·가입, 외부 서버가 부르는 웹훅(결제·문자)
+const PUBLIC = [
+  ['GET', /^\/$/], ['GET', /^\/favicon\.ico$/], ['GET', /^\/login$/], ['POST', /^\/login$/],
+  ['POST', /^\/signup(\/start|\/verify)?$/], ['POST', /^\/logout$/],
+  ['POST', /^\/pay\/webhook$/], ['POST', /^\/sms\/[\w-]+$/],
+];
 http.createServer(async (req, res) => {
   const url = new URL(req.url, BASE);
+  if (!PUBLIC.some(([m, re]) => m === req.method && re.test(url.pathname))) {
+    let me = null;
+    try { me = await currentUser(req); } catch (e) { console.error(e); return send(res, 500, page('오류', '<h1>문제가 생겼어요</h1>')); }
+    if (!me) return redirect(res, `/login?e=${enc('가입하고 로그인해야 쓸 수 있어요')}&next=${enc(req.method === 'GET' ? url.pathname + url.search : '/my')}`);
+  }
   for (const r of routes) {
     const m = url.pathname.match(r.re);
     if (r.method === req.method && m) {
