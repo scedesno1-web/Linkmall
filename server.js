@@ -329,12 +329,12 @@ const readForm = (req) => new Promise((resolve) => {
   req.on('end', () => resolve(Object.fromEntries(new URLSearchParams(b))));
 });
 
-const NOTI = { sale: '💰 판매 (새 주문 · 입금 확인)', deposit: '⏳ 입금 대기 (구매자가 입금 신청했을 때)', charge: '⏳ 포인트 충전 신청', warn: '⚠️ 주의 (재고 없음 · 입금 직접 확인 필요 등)' };
+const NOTI = { sale: '💰 판매 (새 주문)', charge: '⏳ 포인트 충전 신청', stock: '📦 재고 알림 (재고가 0이 됐을 때)' };
 // 저장 형태: 주소 또는 주소#n=sale,warn  (#n= 없음 = 전부 켜짐, #n=- = 전부 꺼짐)
 const parseHook = (w) => {
   const [url, frag = ''] = String(w || '').split('#');
   const mm = frag.match(/^n=(.*)$/);
-  const on = mm ? (mm[1] === '-' ? [] : mm[1].split(',').filter((k) => NOTI[k])) : Object.keys(NOTI);
+  const on = mm ? (mm[1] === '-' ? [] : mm[1].split(',').map((k) => (k === 'warn' ? 'stock' : k)).filter((k) => NOTI[k])) : Object.keys(NOTI);
   return { url, on };
 };
 const buildHook = (url, on) => (!url ? '' : on.length === Object.keys(NOTI).length ? url : url + '#n=' + (on.length ? on.join(',') : '-'));
@@ -345,7 +345,7 @@ const HOOK_SAVE_RE = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[\w\-
 const parseHooks = (w) => String(w || '').split('\n').map((x) => x.trim()).filter(Boolean).map(parseHook).filter((h) => h.url).slice(0, MAX_HOOKS);
 const buildHooks = (list) => list.map((h) => buildHook(h.url, h.on)).join('\n');
 
-async function notify(shop, text, kind = 'warn') {
+async function notify(shop, text, kind = 'stock') {
   if (!shop || !shop.webhook) return;
   const targets = parseHooks(shop.webhook).filter((h) => HOOK_RE.test(h.url) && h.on.includes(kind)); // 판매자가 끈 종류는 안 보냄
   if (!targets.length) return;
@@ -584,7 +584,7 @@ async function placeOrder(order, item) {
     }
     throw e;
   }
-  if (item.stock != null && line == null) await notify(await store.shopById(item.shop), `⚠️ 재고가 없는데 결제가 확인됐어요: ${item.title}. 구매자에게 직접 보내주세요 (${BASE}/o/${order.token})`, 'warn');
+  if (item.stock != null && line == null) await notify(await store.shopById(item.shop), `⚠️ 재고가 없는데 결제가 확인됐어요: ${item.title}. 구매자에게 직접 보내주세요 (${BASE}/o/${order.token})`, 'stock');
   return order;
 }
 
@@ -595,7 +595,7 @@ async function confirmDeposit(dep) {
   const item = await store.itemById(dep.item);
   if (!item) return null;
   if (item.stock != null && !stockLines(item.stock).length) {
-    await notify(await store.shopById(dep.shop), `⚠️ 재고가 0인데 입금이 도착했어요: ${item.title} · 입금자 ${dep.name} (${won(dep.amount)}). 입금자에게 환불해 주세요.`, 'warn');
+    await notify(await store.shopById(dep.shop), `⚠️ 재고가 0인데 입금이 도착했어요: ${item.title} · 입금자 ${dep.name} (${won(dep.amount)}). 입금자에게 환불해 주세요.`, 'stock');
     return null;
   }
   const order = { token: dep.token, item: dep.item, price: Number(dep.amount), paidAt: Date.now() };
@@ -1041,7 +1041,7 @@ route('POST', /^\/sms\/([\w-]+)$/, async (req, res, m) => {
     const waiting = (await store.waitingDeposits(shop.id)).filter((d) => Date.now() <= d.created + DEP_TTL);
     const hit = waiting.filter((d) => flat.includes(d.name.replace(/\s/g, '')) && new RegExp('(^|\\D)' + d.amount + '(\\D|$)').test(plain));
     if (hit.length === 1) { await confirmDeposit(hit[0]); result = 'ok'; }
-    else if (hit.length > 1) { result = 'ambiguous'; await notify(shop, '⚠️ 같은 이름·금액의 입금 대기가 여러 건이에요. 관리 페이지에서 직접 확인해 주세요.', 'warn'); }
+    else if (hit.length > 1) { result = 'ambiguous'; }
     else result = 'nomatch';
   }
   res.writeHead(200); res.end(result);
@@ -1067,7 +1067,13 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   const price = Number(item.price);
   const soldOut = () => send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   let line = null;
-  if (item.stock != null) { line = await store.popStock(item.id); if (line == null) return soldOut(); }
+  let soldLast = false; // 이번 구매로 재고가 0이 됐는지
+  if (item.stock != null) {
+    line = await store.popStock(item.id);
+    if (line == null) return soldOut();
+    const after = await store.itemById(item.id);
+    soldLast = !!after && !stockLines(after.stock).length;
+  }
   const bal = await store.addShopPoints(u.id, item.shop, -price);
   if (bal == null) {
     if (line != null) await restoreStock(item.id, line);
@@ -1078,7 +1084,9 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   catch (e) { await store.addShopPoints(u.id, item.shop, price); if (line != null) await restoreStock(item.id, line); throw e; }
   try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -price, kind: 'buy', ref: order.token, note: item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
   if (item.title_id) { const t = await store.titleById(item.title_id); if (t) await store.grantTitle(u.id, t.id, item.shop); }
-  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(price)})`, 'sale');
+  const shopN = await store.shopById(item.shop);
+  await notify(shopN, `💰 새 주문! ${item.title} (${won(price)})`, 'sale');
+  if (soldLast) await notify(shopN, `📦 재고가 0이 됐어요: ${item.title}. 재고를 채워주세요.`, 'stock');
   redirect(res, `/o/${order.token}`);
 });
 
