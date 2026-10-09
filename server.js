@@ -406,14 +406,15 @@ const ICO = {
   cube: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
   star: '<svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17.4 6.1 20.7l1.3-6.6L2.5 9.5l6.6-.8z"/></svg>',
 };
-const shopPage = (shop, title, body, me, bal, next, active = 'home') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${shopCss}</style></head><body>${SPLASH}
+const shopPage = (shop, title, body, me, bal, next, active = 'home', navItems = [], curId = '') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${shopCss}</style></head><body>${SPLASH}
 <div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><b>${esc(shop.name)}</b>${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
 <div class="ov" onclick="document.body.classList.remove('open')"></div>
 <nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(shop.name)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
 <a class="nv${active === 'home' ? ' on' : ''}" href="/s/${shop.id}">${ICO.home}대시보드</a>
 <a class="nv" href="/w/${shop.id}">${ICO.coin}포인트 충전</a>
-<h3>카테고리</h3>
-<a class="nv${active === 'items' ? ' on' : ''}" href="/s/${shop.id}">${ICO.cube}${esc(shop.name)}</a></nav>
+<div class="sm" style="margin:30px 0 -22px 12px;font-size:13px">${esc(shop.name)}</div>
+<h3>상품</h3>
+${navItems.length ? navItems.map((i) => `<a class="nv${i.id === curId ? ' on' : ''}" href="/i/${i.id}">${ICO.cube}${esc(i.title)}</a>`).join('') : '<p class="sm" style="margin:0 0 0 14px">등록된 상품이 없어요</p>'}</nav>
 <div class="main">${body}</div><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
 
 const pointsBlock = (item, me, bal, shop) => {
@@ -1582,7 +1583,7 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
 <div class="rt">${ICO.star}<span>${rv ? (rv.sum / rv.n).toFixed(1) : '-'}</span>${rv ? `<span class="sm">(${rv.n})</span>` : ''}</div>
 <div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
   };
-  send(res, 200, shopPage(shop, shop.name, (items.length ? `<div class="pg">${items.map(card).join('')}</div>` : '<p class="sm">등록된 아이템이 없어요</p>'), me, bal, '/s/' + shop.id, 'items'));
+  send(res, 200, shopPage(shop, shop.name, (items.length ? `<div class="pg">${items.map(card).join('')}</div>` : '<p class="sm">등록된 아이템이 없어요</p>'), me, bal, '/s/' + shop.id, 'items', items));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
@@ -1606,7 +1607,8 @@ ${item.preview ? `<div class="bx" style="white-space:pre-wrap">${esc(item.previe
 ${left === 0 ? '<div class="nt">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}
 <h3 style="font-size:20px;margin:30px 0 10px">⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h3>
 ${reviews.map((r) => `<div class="bx">${stars(r.rating)} <span class="sm">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button class="bb" style="background:#dc2626;margin-top:10px;padding:12px;font-size:15px">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sm">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`;
-  send(res, 200, shopPage(shop, item.title, body, me, bal, '/i/' + item.id, 'items'));
+  const navItems = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
+  send(res, 200, shopPage(shop, item.title, body, me, bal, '/i/' + item.id, 'items', navItems, item.id));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
