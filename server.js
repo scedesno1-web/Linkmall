@@ -789,6 +789,17 @@ route('POST', /^\/my\/shop-request$/, async (req, res) => {
   redirect(res, `/my?m=${enc('신청이 접수됐어요. 운영자가 확인할 때까지 기다려 주세요')}`);
 });
 
+route('POST', /^\/m\/([\w-]+)\/webhook$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const f = await readForm(req);
+  const url = str(f.webhook, 300);
+  const back = `<p><a href="/m/${shop.key}">← 상점 관리로</a></p>`;
+  if (url && !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[\w\-\/.]+$/.test(url)) return send(res, 400, page('웹훅 저장', `<h1>⚠️ 저장하지 못했어요</h1><p class="warn">디스코드 웹훅 주소 형식이 아니에요. https://discord.com/api/webhooks/ 로 시작해야 해요.</p>${back}`));
+  await store.updateShop(shop.id, { webhook: url });
+  send(res, 200, page('웹훅 저장', url ? `<h1>✅ 저장했어요</h1><p class="sub">상점 관리에서 "테스트 알림 보내기"를 눌러 잘 오는지 확인해 보세요.</p>${back}` : `<h1>✅ 알림을 껐어요</h1><p class="sub">이제 디스코드로 알림이 가지 않아요.</p>${back}`));
+});
+
 route('POST', /^\/m\/([\w-]+)\/webhook-test$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
@@ -814,7 +825,9 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
-<form class="card" method="post" action="/m/${shop.key}/webhook-test"><b>🔔 디스코드 알림</b><p class="sub">${shop.webhook ? '새 주문·입금 알림이 오는지 테스트 메시지를 보내봐요 (하루 20번까지).' : '상점을 만들 때 웹훅 URL을 넣지 않아서 알림이 꺼져 있어요.'}</p><button${shop.webhook ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기</button></form>
+<div class="card"><b>🔔 디스코드 알림</b><p class="sub">새 주문·입금 알림을 받을 디스코드 웹훅 주소예요. 비우고 저장하면 알림이 꺼져요.</p>
+<form method="post" action="/m/${shop.key}/webhook"><input name="webhook" placeholder="https://discord.com/api/webhooks/..." value="${esc(shop.webhook)}" maxlength="300" autocomplete="off"><button>웹훅 저장</button></form>
+<form method="post" action="/m/${shop.key}/webhook-test" style="margin-top:8px"><button${shop.webhook ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기 (하루 20번까지)</button></form></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
 <h2>🏷️ 칭호</h2>
 <form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
