@@ -61,6 +61,12 @@ const sbStore = {
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
   async listUsers(q) { return sbGet('users', `select=id,email,banned,created,extra_shops&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
   async allShops() { return sbGet('shops', 'select=*&order=created.desc&limit=200'); },
+  async searchShops(q, ownerIds) {
+    const a = await sbGet('shops', `name=ilike.*${enc(q)}*&select=*&order=created.desc&limit=100`);
+    const b = ownerIds.length ? await sbGet('shops', `owner=in.(${ownerIds.map(enc).join(',')})&select=*&order=created.desc&limit=100`) : [];
+    const seen = new Set();
+    return [...a, ...b].filter((x) => !seen.has(x.id) && seen.add(x.id)).sort((x, y) => y.created - x.created);
+  },
   // 포인트 증감: points가 읽은 값 그대로일 때만 갱신(동시 결제에도 잔액이 틀어지지 않음). 잔액 부족이면 null
   async addPoints(uid, delta) {
     for (let n = 0; n < 8; n++) {
@@ -193,6 +199,7 @@ const fileStore = {
   async userByCode(c) { const r = Object.values(L().users).filter((u) => u.id.startsWith(c)); return r.length === 1 ? r[0] : null; },
   async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, banned: !!u.banned, created: u.created, extra_shops: u.extra_shops || 0 })); },
   async allShops() { return Object.values(L().shops).sort((a, b) => b.created - a.created); },
+  async searchShops(q, ownerIds) { const k = q.toLowerCase(); return Object.values(L().shops).filter((x) => String(x.name || '').toLowerCase().includes(k) || ownerIds.includes(x.owner)).sort((a, b) => b.created - a.created); },
   async addPoints(uid, delta) { const d = L(); const u = d.users[uid]; if (!u) return null; const np = Number(u.points || 0) + delta; if (np < 0) return null; u.points = np; save(d); return np; },
   async addEarned(shopId, delta) { const d = L(); const sh = d.shops[shopId]; if (!sh) return null; sh.earned = Math.max(0, Number(sh.earned || 0) + delta); save(d); return sh.earned; },
   async shopPoints(uid, shopId) { return Number(L().shop_points[uid + '|' + shopId] || 0); },
@@ -327,6 +334,16 @@ async function notify(shop, text) {
   try { await fetch(shop.webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) }); } catch (e) { console.error('webhook 실패', e.message); }
 }
 
+async function testWebhook(shop) {
+  const url = shop && shop.webhook;
+  if (!url) return { ok: false, msg: '이 상점에는 웹훅이 등록돼 있지 않아요' };
+  if (!/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(url)) return { ok: false, msg: '디스코드 웹훅 주소 형식이 아니에요 (https://discord.com/api/webhooks/ 로 시작해야 해요)' };
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: '✅ 링크몰 테스트 알림이에요. 판매 알림이 이 채널로 와요.', allowed_mentions: { parse: [] } }) });
+    if (r.ok) return { ok: true };
+    return { ok: false, msg: r.status === 404 || r.status === 401 ? '웹훅이 삭제됐거나 주소가 틀려요 (' + r.status + ')' : '디스코드가 거절했어요 (' + r.status + ')' };
+  } catch (e) { return { ok: false, msg: '디스코드에 연결하지 못했어요' }; }
+}
 const str = (v, n) => String(v ?? '').trim().slice(0, n);
 const DEP_TTL = 24 * 3600 * 1000; // 입금 신청 유효시간 24시간
 
@@ -771,6 +788,16 @@ route('POST', /^\/my\/shop-request$/, async (req, res) => {
   redirect(res, `/my?m=${enc('신청이 접수됐어요. 운영자가 확인할 때까지 기다려 주세요')}`);
 });
 
+route('POST', /^\/m\/([\w-]+)\/webhook-test$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  if (!sendOk('wh:' + shop.id, 3, 60000)) return send(res, 429, page('잠깐만요', `<h1>너무 자주 눌렀어요</h1><p class="sub">1분 뒤에 다시 해주세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
+  const r = await testWebhook(shop);
+  send(res, 200, page('알림 테스트', r.ok
+    ? `<h1>✅ 보냈어요</h1><p class="sub">디스코드 채널에 테스트 메시지가 왔는지 확인해 보세요. 안 보이면 알림 채널이 맞는지 확인하세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`
+    : `<h1>⚠️ 보내지 못했어요</h1><p class="warn">${esc(r.msg)}</p><p class="sub">웹훅 주소는 디스코드 채널 설정 → 연동 → 웹훅에서 다시 복사할 수 있어요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
+});
+
 route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
@@ -786,6 +813,7 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
+<form class="card" method="post" action="/m/${shop.key}/webhook-test"><b>🔔 디스코드 알림</b><p class="sub">${shop.webhook ? '새 주문·입금 알림이 오는지 테스트 메시지를 보내봐요.' : '상점을 만들 때 웹훅 URL을 넣지 않아서 알림이 꺼져 있어요.'}</p><button${shop.webhook ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기</button></form>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
 <h2>🏷️ 칭호</h2>
 <form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
@@ -1123,9 +1151,13 @@ route('GET', /^\/admin$/, async (req, res) => {
   const q = new URL(req.url, BASE).searchParams;
   const search = str(q.get('q'), 50);
   const users = await store.listUsers(search);
-  const shops = await store.allShops();
+  const sq = str(q.get('sq'), 50); // 상점 검색: 상점 이름 또는 주인 이메일
+  const owners = sq ? await store.listUsers(sq) : [];
+  const shops = sq ? await store.searchShops(sq, owners.map((o) => o.id)) : await store.allShops();
   const reqs = await store.listShopRequests();
   const emailMap = new Map(users.map((x) => [x.id, x.email]));
+  for (const o of owners) emailMap.set(o.id, o.email);
+  if (sq) for (const sh of shops) if (sh.owner && !emailMap.has(sh.owner)) { const x = await store.userById(sh.owner); if (x) emailMap.set(x.id, x.email); }
   for (const r of reqs) if (!emailMap.has(r.user_id)) { const x = await store.userById(r.user_id); if (x) emailMap.set(x.id, x.email); }
   const emailOf = (id) => emailMap.get(id) || (id ? id.slice(0, 8) : '없음');
   send(res, 200, page('운영자', `<a class="sub" href="/my">← 내 상점</a><h1>👑 운영자</h1>
@@ -1135,10 +1167,11 @@ ${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span 
 <form method="post" action="/admin/requests/${r.user_id}/approve"><button>승인 (상점 1개 더 허용)</button></form>
 <form method="post" action="/admin/requests/${r.user_id}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">신청이 없어요</p>'}
 <h2>🏪 상점 (${shops.length})</h2>
+<form method="get" action="/admin"><input name="sq" placeholder="상점 이름 또는 주인 이메일 검색" value="${esc(sq)}"><input type="hidden" name="q" value="${esc(search)}"><button>검색</button>${sq ? '<p class="sub"><a href="/admin' + (search ? '?q=' + enc(search) : '') + '">검색 지우기</a></p>' : ''}</form>
 ${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b>${sh.deleted ? ' 🗑️ 삭제됨' : ''}<br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a>${sh.deleted ? '' : ` · <a href="/s/${sh.id}">보기</a>`}
-${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || '<p class="sub">상점이 없어요</p>'}
+${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || `<p class="sub">${sq ? '검색 결과가 없어요' : '상점이 없어요'}</p>`}
 <h2>👥 사용자</h2>
-<form method="get" action="/admin"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
+<form method="get" action="/admin"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
 ${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
 ${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" style="margin-top:8px"><span class="sub">🏪 상점 한도 (현재 ${shops.filter((sh) => sh.owner === x.id && !sh.deleted).length}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required><button>한도 저장</button><button name="reset" value="1" formnovalidate style="background:#6b7280;margin-top:6px">기본값(${FREE_SHOPS}개)으로</button></form><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
 });
