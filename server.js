@@ -59,7 +59,7 @@ const sbStore = {
   async deleteItem(id) { await sbDelete('items', `id=eq.${enc(id)}`); },
   async updateUser(id, f) { await sbPatch('users', `id=eq.${enc(id)}`, f); },
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
-  async listUsers(q) { return sbGet('users', `select=id,email,banned,created&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
+  async listUsers(q) { return sbGet('users', `select=id,email,banned,created,extra_shops&order=created.desc&limit=100${q ? `&email=ilike.*${enc(q)}*` : ''}`); },
   async allShops() { return sbGet('shops', 'select=*&order=created.desc&limit=200'); },
   // 포인트 증감: points가 읽은 값 그대로일 때만 갱신(동시 결제에도 잔액이 틀어지지 않음). 잔액 부족이면 null
   async addPoints(uid, delta) {
@@ -191,7 +191,7 @@ const fileStore = {
   async deleteItem(id) { const d = load(); delete d.items[id]; save(d); },
   async updateUser(id, f) { const d = L(); if (d.users[id]) Object.assign(d.users[id], f); save(d); },
   async userByCode(c) { const r = Object.values(L().users).filter((u) => u.id.startsWith(c)); return r.length === 1 ? r[0] : null; },
-  async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, banned: !!u.banned, created: u.created })); },
+  async listUsers(q) { return Object.values(L().users).filter((u) => !q || u.email.includes(q.toLowerCase())).sort((a, b) => b.created - a.created).slice(0, 100).map((u) => ({ id: u.id, email: u.email, banned: !!u.banned, created: u.created, extra_shops: u.extra_shops || 0 })); },
   async allShops() { return Object.values(L().shops).sort((a, b) => b.created - a.created); },
   async addPoints(uid, delta) { const d = L(); const u = d.users[uid]; if (!u) return null; const np = Number(u.points || 0) + delta; if (np < 0) return null; u.points = np; save(d); return np; },
   async addEarned(shopId, delta) { const d = L(); const sh = d.shops[shopId]; if (!sh) return null; sh.earned = Math.max(0, Number(sh.earned || 0) + delta); save(d); return sh.earned; },
@@ -487,8 +487,8 @@ const CHARGE_TTL = 24 * 3600 * 1000;
 const MIN_CHARGE = 1000; const MAX_CHARGE = 500000;
 const pts = (n) => Number(n || 0).toLocaleString('ko-KR') + 'P';
 const fmtDate = (t) => new Date(Number(t)).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
-const FREE_SHOPS = 4; // 운영자 동의 없이 만들 수 있는 상점 수
-const shopLimit = (u) => (isAdmin(u) ? Infinity : FREE_SHOPS + Number(u.extra_shops || 0));
+const FREE_SHOPS = 3; // 운영자 동의 없이 만들 수 있는 상점 수
+const shopLimit = (u) => (isAdmin(u) ? Infinity : Math.max(0, FREE_SHOPS + Number(u.extra_shops || 0))); // 운영자가 사람마다 조절 (/admin)
 const stars = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
 const SEL_STYLE = 'width:100%;padding:12px;border:1px solid #d9dce1;border-radius:10px;font-size:15px;margin:4px 0 10px';
 const badgeHtml = (name) => `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:#eef0ff;color:#4338ca;font-size:13px;margin:2px">${esc(name)}</span>`;
@@ -1140,7 +1140,7 @@ ${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><butt
 <h2>👥 사용자</h2>
 <form method="get" action="/admin"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
 ${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
-${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" style="margin-top:8px"><span class="sub">🏪 상점 한도 (현재 ${shops.filter((sh) => sh.owner === x.id && !sh.deleted).length}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required><button>한도 저장</button><button name="reset" value="1" formnovalidate style="background:#6b7280;margin-top:6px">기본값(${FREE_SHOPS}개)으로</button></form><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
 });
 
 route('POST', /^\/admin\/shops\/([\w-]+)\/(delete|restore)$/, async (req, res, m) => {
@@ -1159,6 +1159,22 @@ route('POST', /^\/admin\/requests\/([\w-]+)\/(approve|reject)$/, async (req, res
   if (target && m[2] === 'approve') await store.updateUser(target.id, { extra_shops: Number(target.extra_shops || 0) + 1 });
   await store.deleteShopRequest(m[1]);
   redirect(res, `/admin?m=${enc(m[2] === 'approve' ? '승인했어요. 상점을 1개 더 만들 수 있어요' : '신청을 거절했어요')}`);
+});
+
+// 사람마다 상점 한도 정하기 (0~100개, 기본값으로 되돌리기 가능)
+route('POST', /^\/admin\/users\/([\w-]+)\/limit$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const f = await readForm(req);
+  const done = (k, t) => redirect(res, `/admin?${k}=${enc(t)}`);
+  const target = await store.userById(m[1]);
+  if (!target) return done('e', '사용자를 찾을 수 없어요');
+  if (isAdmin(target)) return done('e', '운영자 계정은 한도가 없어요');
+  if (f.reset === '1') { await store.updateUser(target.id, { extra_shops: 0 }); return done('m', `${target.email} 한도를 기본값(${FREE_SHOPS}개)으로 되돌렸어요`); }
+  const n = parseInt(f.n, 10);
+  if (!(n >= 0 && n <= 100)) return done('e', '한도는 0~100 사이 숫자로 넣어주세요');
+  await store.updateUser(target.id, { extra_shops: n - FREE_SHOPS });
+  done('m', `${target.email} 상점 한도를 ${n}개로 정했어요`);
 });
 
 route('POST', /^\/admin\/users\/([\w-]+)\/ban$/, async (req, res, m) => {
