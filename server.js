@@ -329,21 +329,44 @@ const readForm = (req) => new Promise((resolve) => {
   req.on('end', () => resolve(Object.fromEntries(new URLSearchParams(b))));
 });
 
-async function notify(shop, text) {
-  if (!shop || !shop.webhook || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(shop.webhook)) return;
+const NOTI = { sale: '💰 판매 (새 주문 · 입금 확인)', deposit: '⏳ 입금 대기 (구매자가 입금 신청했을 때)', charge: '⏳ 포인트 충전 신청', warn: '⚠️ 주의 (재고 없음 · 입금 직접 확인 필요 등)' };
+// 저장 형태: 주소 또는 주소#n=sale,warn  (#n= 없음 = 전부 켜짐, #n=- = 전부 꺼짐)
+const parseHook = (w) => {
+  const [url, frag = ''] = String(w || '').split('#');
+  const mm = frag.match(/^n=(.*)$/);
+  const on = mm ? (mm[1] === '-' ? [] : mm[1].split(',').filter((k) => NOTI[k])) : Object.keys(NOTI);
+  return { url, on };
+};
+const buildHook = (url, on) => (!url ? '' : on.length === Object.keys(NOTI).length ? url : url + '#n=' + (on.length ? on.join(',') : '-'));
+const MAX_HOOKS = 5; // 상점당 웹훅 최대 개수
+const HOOK_RE = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//;
+const HOOK_SAVE_RE = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[\w\-\/.]+$/;
+// 저장 형태: 줄바꿈으로 구분된 여러 개 (예전 1개짜리 값도 그대로 읽힘)
+const parseHooks = (w) => String(w || '').split('\n').map((x) => x.trim()).filter(Boolean).map(parseHook).filter((h) => h.url).slice(0, MAX_HOOKS);
+const buildHooks = (list) => list.map((h) => buildHook(h.url, h.on)).join('\n');
+
+async function notify(shop, text, kind = 'warn') {
+  if (!shop || !shop.webhook) return;
+  const targets = parseHooks(shop.webhook).filter((h) => HOOK_RE.test(h.url) && h.on.includes(kind)); // 판매자가 끈 종류는 안 보냄
+  if (!targets.length) return;
   if (!sendOk('nt:' + shop.id, 3, 60000)) { console.error('알림 건너뜀(1분 3번 제한)', shop.id); return; }
-  try { await fetch(shop.webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) }); } catch (e) { console.error('webhook 실패', e.message); }
+  await Promise.all(targets.map((h) =>
+    fetch(h.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text, allowed_mentions: { parse: [] } }) })
+      .catch((e) => console.error('webhook 실패', e.message))));
 }
 
-async function testWebhook(shop) {
-  const url = shop && shop.webhook;
-  if (!url) return { ok: false, msg: '이 상점에는 웹훅이 등록돼 있지 않아요' };
-  if (!/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(url)) return { ok: false, msg: '디스코드 웹훅 주소 형식이 아니에요 (https://discord.com/api/webhooks/ 로 시작해야 해요)' };
-  try {
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: '✅ 링크몰 테스트 알림이에요. 판매 알림이 이 채널로 와요.', allowed_mentions: { parse: [] } }) });
-    if (r.ok) return { ok: true };
-    return { ok: false, msg: r.status === 404 || r.status === 401 ? '웹훅이 삭제됐거나 주소가 틀려요 (' + r.status + ')' : '디스코드가 거절했어요 (' + r.status + ')' };
-  } catch (e) { return { ok: false, msg: '디스코드에 연결하지 못했어요' }; }
+// 등록된 웹훅 전부에 테스트 메시지를 보내고 개수별 결과를 돌려줌
+async function testWebhooks(shop) {
+  const hooks = parseHooks(shop && shop.webhook);
+  return Promise.all(hooks.map(async (h, i) => {
+    const n = i + 1;
+    if (!HOOK_RE.test(h.url)) return { n, ok: false, msg: '디스코드 웹훅 주소 형식이 아니에요' };
+    try {
+      const r = await fetch(h.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `✅ 링크몰 테스트 알림이에요. (웹훅 ${n}번) 선택한 알림이 이 채널로 와요.`, allowed_mentions: { parse: [] } }) });
+      if (r.ok) return { n, ok: true };
+      return { n, ok: false, msg: r.status === 404 || r.status === 401 ? '웹훅이 삭제됐거나 주소가 틀려요 (' + r.status + ')' : '디스코드가 거절했어요 (' + r.status + ')' };
+    } catch (e) { return { n, ok: false, msg: '디스코드에 연결하지 못했어요' }; }
+  }));
 }
 const str = (v, n) => String(v ?? '').trim().slice(0, n);
 const DEP_TTL = 24 * 3600 * 1000; // 입금 신청 유효시간 24시간
@@ -561,7 +584,7 @@ async function placeOrder(order, item) {
     }
     throw e;
   }
-  if (item.stock != null && line == null) await notify(await store.shopById(item.shop), `⚠️ 재고가 없는데 결제가 확인됐어요: ${item.title}. 구매자에게 직접 보내주세요 (${BASE}/o/${order.token})`);
+  if (item.stock != null && line == null) await notify(await store.shopById(item.shop), `⚠️ 재고가 없는데 결제가 확인됐어요: ${item.title}. 구매자에게 직접 보내주세요 (${BASE}/o/${order.token})`, 'warn');
   return order;
 }
 
@@ -572,7 +595,7 @@ async function confirmDeposit(dep) {
   const item = await store.itemById(dep.item);
   if (!item) return null;
   if (item.stock != null && !stockLines(item.stock).length) {
-    await notify(await store.shopById(dep.shop), `⚠️ 재고가 0인데 입금이 도착했어요: ${item.title} · 입금자 ${dep.name} (${won(dep.amount)}). 입금자에게 환불해 주세요.`);
+    await notify(await store.shopById(dep.shop), `⚠️ 재고가 0인데 입금이 도착했어요: ${item.title} · 입금자 ${dep.name} (${won(dep.amount)}). 입금자에게 환불해 주세요.`, 'warn');
     return null;
   }
   const order = { token: dep.token, item: dep.item, price: Number(dep.amount), paidAt: Date.now() };
@@ -582,7 +605,7 @@ async function confirmDeposit(dep) {
     throw e;
   }
   await store.setDepositDone(dep.token);
-  await notify(await store.shopById(dep.shop), `💰 입금 확인! ${item.title} (${won(order.price)})`);
+  await notify(await store.shopById(dep.shop), `💰 입금 확인! ${item.title} (${won(order.price)})`, 'sale');
   return order;
 }
 
@@ -612,7 +635,7 @@ async function finalizePaid(p) {
     if (again) return again;
     throw e;
   }
-  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(order.price)})`);
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(order.price)})`, 'sale');
   return order;
 }
 
@@ -774,7 +797,7 @@ route('POST', /^\/shops$/, async (req, res) => {
   const f = await readForm(req);
   const mine = (await store.shopsByOwner(u.id)).filter((x) => !x.deleted);
   if (mine.length >= shopLimit(u)) return redirect(res, `/my?e=${enc('상점을 더 만들려면 운영자의 동의가 필요해요')}`);
-  const shop = { id: rid(4), key: rid(12), name: str(f.name, 40), webhook: str(f.webhook, 300), owner: u.id, created: Date.now() };
+  const shop = { id: rid(4), key: rid(12), name: str(f.name, 40), webhook: str(f.webhook, 300).split('#')[0], owner: u.id, created: Date.now() };
   await store.createShop(shop);
   redirect(res, `/m/${shop.key}`);
 });
@@ -793,21 +816,39 @@ route('POST', /^\/m\/([\w-]+)\/webhook$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
   const f = await readForm(req);
-  const url = str(f.webhook, 300);
+  const url = str(f.webhook, 300).split('#')[0];
+  const on = Object.keys(NOTI).filter((k) => f['n_' + k] === '1');
+  const list = parseHooks(shop.webhook);
+  const idx = f.idx === undefined || f.idx === '' ? -1 : parseInt(f.idx, 10);
   const back = `<p><a href="/m/${shop.key}">← 상점 관리로</a></p>`;
-  if (url && !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[\w\-\/.]+$/.test(url)) return send(res, 400, page('웹훅 저장', `<h1>⚠️ 저장하지 못했어요</h1><p class="warn">디스코드 웹훅 주소 형식이 아니에요. https://discord.com/api/webhooks/ 로 시작해야 해요.</p>${back}`));
-  await store.updateShop(shop.id, { webhook: url });
-  send(res, 200, page('웹훅 저장', url ? `<h1>✅ 저장했어요</h1><p class="sub">상점 관리에서 "테스트 알림 보내기"를 눌러 잘 오는지 확인해 보세요.</p>${back}` : `<h1>✅ 알림을 껐어요</h1><p class="sub">이제 디스코드로 알림이 가지 않아요.</p>${back}`));
+  const fail = (msg) => send(res, 400, page('웹훅 저장', `<h1>⚠️ 저장하지 못했어요</h1><p class="warn">${esc(msg)}</p>${back}`));
+  let title = '✅ 저장했어요';
+  if (idx >= 0) {
+    if (!list[idx]) return fail('목록이 바뀌었어요. 상점 관리로 돌아가서 다시 해주세요.');
+    if (f.del === '1' || !url) { list.splice(idx, 1); title = '✅ 웹훅을 삭제했어요'; }
+    else if (!HOOK_SAVE_RE.test(url)) return fail('디스코드 웹훅 주소 형식이 아니에요. https://discord.com/api/webhooks/ 로 시작해야 해요.');
+    else list[idx] = { url, on };
+  } else {
+    if (!url) return fail('웹훅 주소를 입력해 주세요.');
+    if (!HOOK_SAVE_RE.test(url)) return fail('디스코드 웹훅 주소 형식이 아니에요. https://discord.com/api/webhooks/ 로 시작해야 해요.');
+    if (list.length >= MAX_HOOKS) return fail(`웹훅은 상점당 ${MAX_HOOKS}개까지 등록할 수 있어요.`);
+    list.push({ url, on });
+  }
+  if (new Set(list.map((h) => h.url)).size !== list.length) return fail('같은 웹훅 주소가 이미 등록돼 있어요.');
+  await store.updateShop(shop.id, { webhook: buildHooks(list) });
+  send(res, 200, page('웹훅 저장', `<h1>${title}</h1><p class="sub">상점 관리에서 "테스트 알림 보내기"를 눌러 잘 오는지 확인해 보세요. (등록 ${list.length}/${MAX_HOOKS}개)</p>${back}`));
 });
 
 route('POST', /^\/m\/([\w-]+)\/webhook-test$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
-  if (!sendOk('wh:' + shop.id, 20, 86400000)) return send(res, 429, page('오늘은 여기까지', `<h1>테스트는 하루 20번까지예요</h1><p class="sub">내일 다시 해주세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
-  const r = await testWebhook(shop);
-  send(res, 200, page('알림 테스트', r.ok
-    ? `<h1>✅ 보냈어요</h1><p class="sub">디스코드 채널에 테스트 메시지가 왔는지 확인해 보세요. 안 보이면 알림 채널이 맞는지 확인하세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`
-    : `<h1>⚠️ 보내지 못했어요</h1><p class="warn">${esc(r.msg)}</p><p class="sub">웹훅 주소는 디스코드 채널 설정 → 연동 → 웹훅에서 다시 복사할 수 있어요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
+  const back = `<p><a href="/m/${shop.key}">← 상점 관리로</a></p>`;
+  if (!sendOk('wh:' + shop.id, 20, 86400000)) return send(res, 429, page('오늘은 여기까지', `<h1>테스트는 하루 20번까지예요</h1><p class="sub">내일 다시 해주세요.</p>${back}`));
+  const rs = await testWebhooks(shop);
+  if (!rs.length) return send(res, 200, page('알림 테스트', `<h1>⚠️ 등록된 웹훅이 없어요</h1>${back}`));
+  const bad = rs.filter((x) => !x.ok);
+  const lines = rs.map((x) => `<p class="${x.ok ? 'sub' : 'warn'}">${x.ok ? '✅' : '⚠️'} 웹훅 ${x.n}번: ${x.ok ? '보냈어요' : esc(x.msg)}</p>`).join('');
+  send(res, 200, page('알림 테스트', `<h1>${bad.length ? '⚠️ 일부는 보내지 못했어요' : '✅ 보냈어요'}</h1>${lines}<p class="sub">${bad.length ? '웹훅 주소는 디스코드 채널 설정 → 연동 → 웹훅에서 다시 복사할 수 있어요.' : '각 디스코드 채널에 테스트 메시지가 왔는지 확인해 보세요.'}</p>${back}`));
 });
 
 route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
@@ -822,12 +863,21 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   const holders = {};
   for (const t of titles) holders[t.id] = await store.titleHolders(t.id);
   const charges = await store.shopCharges(shop.id);
+  const hooks = parseHooks(shop.webhook);
+  const notiBoxes = (on) => Object.entries(NOTI).map(([k, label]) => `<label style="display:block;padding:5px 0;font-size:14px"><input type="checkbox" name="n_${k}" value="1" style="width:auto;padding:0;margin:0 8px 0 0;vertical-align:middle" ${on.includes(k) ? 'checked' : ''}>${label}</label>`).join('');
+  const hookCards = hooks.map((h, i) => `<form class="card" method="post" action="/m/${shop.key}/webhook"><b>웹훅 ${i + 1}</b><input type="hidden" name="idx" value="${i}"><input name="webhook" value="${esc(h.url)}" maxlength="300" autocomplete="off">
+<p class="sub" style="margin:4px 0">이 웹훅으로 받을 알림</p>${notiBoxes(h.on)}
+<button style="margin-top:8px">저장</button> <button name="del" value="1" style="margin-top:6px;background:#dc2626" onclick="return confirm('이 웹훅을 삭제할까요?')">삭제</button></form>`).join('');
+  const hookAdd = hooks.length < MAX_HOOKS
+    ? `<form class="card" method="post" action="/m/${shop.key}/webhook"><b>웹훅 추가</b><input name="webhook" placeholder="https://discord.com/api/webhooks/..." maxlength="300" autocomplete="off" required>
+<p class="sub" style="margin:4px 0">이 웹훅으로 받을 알림</p>${notiBoxes(Object.keys(NOTI))}<button style="margin-top:8px">추가</button></form>`
+    : `<p class="sub">웹훅을 ${MAX_HOOKS}개 다 등록했어요. 새로 추가하려면 하나를 삭제하세요.</p>`;
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
-<div class="card"><b>🔔 디스코드 알림</b><p class="sub">새 주문·입금 알림을 받을 디스코드 웹훅 주소예요. 비우고 저장하면 알림이 꺼져요.</p>
-<form method="post" action="/m/${shop.key}/webhook"><input name="webhook" placeholder="https://discord.com/api/webhooks/..." value="${esc(shop.webhook)}" maxlength="300" autocomplete="off"><button>웹훅 저장</button></form>
-<form method="post" action="/m/${shop.key}/webhook-test" style="margin-top:8px"><button${shop.webhook ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기 (하루 20번까지)</button></form></div>
+<div class="card"><b>🔔 디스코드 알림</b> <span class="sub">(${hooks.length}/${MAX_HOOKS}개)</span><p class="sub">새 주문·입금 알림을 받을 디스코드 웹훅 주소예요. 최대 ${MAX_HOOKS}개까지 등록할 수 있고, 웹훅마다 받을 알림 종류를 따로 고를 수 있어요.</p>
+${hookCards}${hookAdd}
+<form method="post" action="/m/${shop.key}/webhook-test" style="margin-top:8px"><button${hooks.length ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기 (하루 20번까지)</button></form></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
 <h2>🏷️ 칭호</h2>
 <form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
@@ -974,7 +1024,7 @@ route('POST', /^\/i\/([\w-]+)\/deposit$/, async (req, res, m) => {
   if (name.length < 2) return send(res, 400, page('오류', `<h1>입금자명을 2자 이상 적어주세요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const dep = { token: rid(16), item: item.id, shop: shop.id, name, amount: Number(item.price), status: 'waiting', created: Date.now() };
   await store.createDeposit(dep);
-  await notify(shop, `⏳ 입금 대기: ${item.title} (${won(dep.amount)}) · 입금자명 ${name}`);
+  await notify(shop, `⏳ 입금 대기: ${item.title} (${won(dep.amount)}) · 입금자명 ${name}`, 'deposit');
   redirect(res, `/o/${dep.token}`);
 });
 
@@ -991,7 +1041,7 @@ route('POST', /^\/sms\/([\w-]+)$/, async (req, res, m) => {
     const waiting = (await store.waitingDeposits(shop.id)).filter((d) => Date.now() <= d.created + DEP_TTL);
     const hit = waiting.filter((d) => flat.includes(d.name.replace(/\s/g, '')) && new RegExp('(^|\\D)' + d.amount + '(\\D|$)').test(plain));
     if (hit.length === 1) { await confirmDeposit(hit[0]); result = 'ok'; }
-    else if (hit.length > 1) { result = 'ambiguous'; await notify(shop, '⚠️ 같은 이름·금액의 입금 대기가 여러 건이에요. 관리 페이지에서 직접 확인해 주세요.'); }
+    else if (hit.length > 1) { result = 'ambiguous'; await notify(shop, '⚠️ 같은 이름·금액의 입금 대기가 여러 건이에요. 관리 페이지에서 직접 확인해 주세요.', 'warn'); }
     else result = 'nomatch';
   }
   res.writeHead(200); res.end(result);
@@ -1028,7 +1078,7 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   catch (e) { await store.addShopPoints(u.id, item.shop, price); if (line != null) await restoreStock(item.id, line); throw e; }
   try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -price, kind: 'buy', ref: order.token, note: item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
   if (item.title_id) { const t = await store.titleById(item.title_id); if (t) await store.grantTitle(u.id, t.id, item.shop); }
-  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(price)})`);
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(price)})`, 'sale');
   redirect(res, `/o/${order.token}`);
 });
 
@@ -1088,7 +1138,7 @@ route('POST', /^\/w\/([\w-]+)\/charge$/, async (req, res, m) => {
   const active = (await store.userShopCharges(u.id, shop.id)).filter((c) => Date.now() <= c.created + CHARGE_TTL);
   if (active.length >= 3) return back('e', '입금 대기 중인 신청이 3건이에요. 하나를 취소하거나 입금한 뒤에 신청해 주세요');
   await store.createCharge({ token: rid(12), user_id: u.id, shop: shop.id, amount, name, status: 'waiting', created: Date.now() });
-  await notify(shop, `⏳ 충전 신청: ${name} · ${won(amount)} — 입금을 확인하고 관리 페이지에서 승인해 주세요`);
+  await notify(shop, `⏳ 충전 신청: ${name} · ${won(amount)} — 입금을 확인하고 관리 페이지에서 승인해 주세요`, 'charge');
   back('m', '충전 신청이 접수됐어요. 아래 계좌로 입금해 주세요');
 });
 
@@ -1276,7 +1326,7 @@ route('POST', /^\/i\/([\w-]+)\/pay$/, async (req, res, m) => {
   if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const order = { token: rid(16), item: item.id, price: item.price, paidAt: Date.now() };
   await placeOrder(order, item);
-  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`);
+  await notify(await store.shopById(item.shop), `💰 새 주문! ${item.title} (${won(item.price)})`, 'sale');
   redirect(res, `/o/${order.token}`);
 });
 
