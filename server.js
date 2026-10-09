@@ -182,6 +182,20 @@ const sbStore = {
     }
     return null;
   },
+  // 재고 n줄을 한 번에 꺼내기 (모자라면 아무것도 안 꺼내고 null)
+  async popStockN(itemId, n) {
+    for (let t = 0; t < 8; t++) {
+      const it = await sbStore.itemById(itemId);
+      if (!it || it.stock == null) return null;
+      const lines = stockLines(it.stock);
+      if (lines.length < n) return null;
+      const ver = it.stock_ver || 0;
+      const r = await fetch(`${SB_URL}/rest/v1/items?id=eq.${enc(itemId)}&stock_ver=eq.${ver}`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ stock: lines.slice(n).join('\n'), stock_ver: ver + 1 }) });
+      if (!r.ok) throw new Error(`supabase popStockN ${r.status} ${await r.text()}`);
+      if ((await r.json()).length) return lines.slice(0, n);
+    }
+    return null;
+  },
   async itemsByShop(shopId) { return sbGet('items', `shop=eq.${enc(shopId)}&select=*&order=created.desc`); },
   async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt, ...(o.delivered != null ? { delivered: o.delivered } : {}), ...(o.buyer ? { buyer: o.buyer } : {}) }); },
   async orderByToken(t) {
@@ -288,6 +302,14 @@ const fileStore = {
     it.stock = lines.slice(1).join('\n'); save(d);
     return lines[0];
   },
+  async popStockN(itemId, n) {
+    const d = load(); const it = d.items[itemId];
+    if (!it || it.stock == null) return null;
+    const lines = stockLines(it.stock);
+    if (lines.length < n) return null;
+    it.stock = lines.slice(n).join('\n'); save(d);
+    return lines.slice(0, n);
+  },
   async itemsByShop(shopId) { return Object.values(load().items).filter((i) => i.shop === shopId).sort((a, b) => b.created - a.created); },
   async createOrder(o) { const d = load(); d.orders[o.token] = o; save(d); },
   async orderByToken(t) { return load().orders[t]; },
@@ -322,14 +344,86 @@ a{color:#4f46e5}.warn{background:#fff7ed;color:#9a3412;border-radius:10px;paddin
 `;
 const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><title>${esc(title)}</title><style>${css}</style></head><body><div class="w">${body}</div></body></html>`;
 
+// ---------- 상점 화면 테마 (모바일 앱 느낌: 상단바 + 왼쪽 메뉴 + 큰 카드) ----------
+const shopCss = `
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;background:#fff;color:#18181b}
+a{color:inherit}
+.top{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #eee}
+.ib{width:42px;height:42px;border:0;background:#f4f4f5;border-radius:13px;display:grid;place-items:center;cursor:pointer;padding:0;color:#18181b}
+.top b{font-size:17px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip{font-size:13px;font-weight:700;background:#f4f4f5;border-radius:999px;padding:9px 13px;text-decoration:none;white-space:nowrap}
+.main{max-width:560px;margin:0 auto;padding:18px 18px 70px}
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
+.dr{position:fixed;top:0;left:0;bottom:0;width:min(88vw,380px);background:#fff;z-index:50;transform:translateX(-103%);transition:transform .25s;padding:24px 18px;overflow:auto}
+body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:34px}.brand img{width:48px;height:48px;border-radius:13px}.brand b{flex:1;font-size:19px}
+.nv{display:flex;align-items:center;gap:14px;padding:16px 14px;font-size:17px;text-decoration:none;border-radius:18px;margin-bottom:6px}
+.nv.on{background:#18181b;color:#fff;box-shadow:0 10px 22px rgba(0,0,0,.18)}
+.dr h3{font-size:22px;margin:30px 0 12px 12px}
+.pc{display:block;background:#fafafa;border:1px solid #f0f0f0;border-radius:28px;box-shadow:0 3px 12px rgba(0,0,0,.08);margin:0 0 22px;overflow:hidden;text-decoration:none;color:inherit}
+.pc.off{opacity:.55}
+.im{background:#f4f4f4;aspect-ratio:16/9;display:grid;place-items:center;color:#71717a;border-bottom:1px solid #ececec}
+.pb{padding:22px 24px 24px}.pb h2{font-size:22px;margin:0 0 12px}
+.rt{display:flex;align-items:center;gap:8px;font-size:17px;margin-bottom:14px;color:#3f3f46}.rt svg{fill:#facc15}
+.pr{display:flex;align-items:center;justify-content:space-between}.pr>b{font-size:28px}.pr span{color:#71717a;font-size:15px}.pr span b{color:#18181b}
+.bx{background:#fafafa;border:1px solid #f0f0f0;border-radius:22px;padding:16px 18px;margin:14px 0}
+.sm{color:#71717a;font-size:13px}
+.nt{background:#fff7ed;color:#9a3412;border-radius:16px;padding:13px 16px;font-size:14px;margin:12px 0}
+.qt{display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid #e4e4e7;border-radius:20px;padding:10px 14px;margin:14px 0 8px}
+.qt .st{display:flex;align-items:center;gap:6px}
+.qt button{width:44px;height:44px;border-radius:13px;border:0;background:#f4f4f5;font-size:24px;line-height:1;cursor:pointer;color:#18181b}
+.qt input{width:70px;text-align:center;border:0;font-size:22px;font-weight:700;background:transparent;font-family:inherit;color:#18181b;-moz-appearance:textfield}
+.qt input::-webkit-outer-spin-button,.qt input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.qk{display:flex;gap:8px;margin-bottom:6px}.qk button{flex:1;padding:10px 0;border:0;border-radius:12px;background:#f4f4f5;font-size:14px;font-weight:600;cursor:pointer;color:#18181b}
+.tot{display:flex;justify-content:space-between;align-items:center}.tot b{font-size:24px}
+.bb{display:block;width:100%;background:#18181b;color:#fff;border:0;border-radius:20px;padding:18px;font-size:18px;font-weight:700;cursor:pointer;text-align:center;text-decoration:none;font-family:inherit}
+.bb[disabled]{background:#d4d4d8;cursor:not-allowed}
+input,textarea,select{font-family:inherit}
+.secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:16px;padding:14px}
+`;
+const ICO = {
+  bag: '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8.5 10.5a3.5 3.5 0 0 0 7 0"/><path d="M4 7h16"/></svg>',
+  menu: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  x: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  home: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>',
+  coin: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5h4a1.75 1.75 0 0 1 0 3.5h-3a1.75 1.75 0 0 0 0 3.5h4"/></svg>',
+  cube: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
+  star: '<svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17.4 6.1 20.7l1.3-6.6L2.5 9.5l6.6-.8z"/></svg>',
+};
+const shopPage = (shop, title, body, me, bal, next, active = 'home') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><title>${esc(title)}</title><style>${shopCss}</style></head><body>
+<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><b>${esc(shop.name)}</b>${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
+<div class="ov" onclick="document.body.classList.remove('open')"></div>
+<nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(shop.name)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
+<a class="nv${active === 'home' ? ' on' : ''}" href="/s/${shop.id}">${ICO.home}대시보드</a>
+<a class="nv" href="/w/${shop.id}">${ICO.coin}포인트 충전</a>
+<h3>카테고리</h3>
+<a class="nv${active === 'items' ? ' on' : ''}" href="/s/${shop.id}">${ICO.cube}${esc(shop.name)}</a></nav>
+<div class="main">${body}</div></body></html>`;
+
 const pointsBlock = (item, me, bal, shop) => {
   const price = Number(item.price);
   const canCharge = !!(shop.bank && shop.account && shop.holder);
-  if (!me) return `<div class="lock">🔒 이 상점 포인트로 구매하면 바로 잠금이 풀려요</div><br><a class="btn" href="/login?next=${enc('/i/' + item.id)}">로그인하고 구매하기</a>`;
-  return `<div class="lock">🔒 이 상점 포인트로 구매하면 바로 잠금이 풀려요</div><br>
-<div class="card"><span class="sub">${esc(shop.name)} 포인트 (1P = 1원, 이 상점에서만 사용)</span><br><b>${pts(bal)}</b>
-${bal >= price ? `<form method="post" action="/i/${item.id}/buy" onsubmit="return confirm('${price.toLocaleString('ko-KR')}P를 사용해 구매할까요?')"><button>${pts(price)}로 구매하기</button></form>` : `<p class="warn">포인트가 ${pts(price - bal)} 부족해요</p>`}
-${canCharge ? `<a href="/w/${shop.id}">이 상점 포인트 충전하기</a>` : '<p class="sub">이 상점은 아직 충전을 받지 않아요</p>'}</div>`;
+  const nextUrl = '/i/' + item.id;
+  if (!me) return `<a class="bb" href="/login?next=${enc(nextUrl)}">로그인하고 구매하기</a>`;
+  const multi = item.stock != null;
+  const max = multi ? Math.max(1, Math.min(MAX_QTY, stockLines(item.stock).length)) : 1;
+  const chargeLink = canCharge ? `<a href="/w/${shop.id}">충전하기</a>` : '(이 상점은 아직 충전을 받지 않아요)';
+  return `<form method="post" action="/i/${item.id}/buy" id="bf">
+${multi ? `<div class="qt"><span style="font-weight:600">수량</span><div class="st"><button type="button" id="mi" aria-label="하나 빼기">−</button><input id="q" name="qty" type="number" inputmode="numeric" min="1" max="${max}" value="1"><button type="button" id="pl" aria-label="하나 더하기">+</button></div></div>
+<div class="qk"><button type="button" data-add="5">+5</button><button type="button" data-add="10">+10</button><button type="button" data-set="${max}">최대 (${max}개)</button></div>` : '<input type="hidden" name="qty" value="1">'}
+<div class="bx tot"><span class="sm">총 결제 포인트</span><b id="tot">${pts(price)}</b></div>
+<div class="nt" id="lack" hidden>포인트가 <b id="lk"></b> 부족해요 · ${chargeLink}</div>
+<button class="bb" id="bb">구매하기</button></form>
+<script>(function(){var P=${price},B=${Number(bal) || 0},M=${max},q=document.getElementById('q'),tot=document.getElementById('tot'),lack=document.getElementById('lack'),lk=document.getElementById('lk'),bb=document.getElementById('bb'),f=document.getElementById('bf');
+function n(){var v=q?parseInt(q.value,10):1;if(!(v>=1))v=1;if(v>M)v=M;return v}
+function fmt(x){return x.toLocaleString('ko-KR')+'P'}
+function upd(){var v=n(),t=P*v;tot.textContent=fmt(t);if(t>B){lack.hidden=false;lk.textContent=fmt(t-B);bb.disabled=true;bb.textContent='포인트가 부족해요'}else{lack.hidden=true;bb.disabled=false;bb.textContent=(M>1||v>1?v+'개 ':'')+fmt(t)+' 구매하기'}}
+if(q){q.addEventListener('input',function(){if(q.value!==''){q.value=n()}upd()});q.addEventListener('blur',function(){q.value=n();upd()});
+document.getElementById('mi').onclick=function(){q.value=Math.max(1,n()-1);upd()};document.getElementById('pl').onclick=function(){q.value=Math.min(M,n()+1);upd()};
+Array.prototype.forEach.call(document.querySelectorAll('[data-add]'),function(b){b.onclick=function(){q.value=Math.min(M,n()+parseInt(b.dataset.add,10));upd()}});
+Array.prototype.forEach.call(document.querySelectorAll('[data-set]'),function(b){b.onclick=function(){q.value=Math.min(M,parseInt(b.dataset.set,10));upd()}})}
+f.onsubmit=function(){var v=n();if(q)q.value=v;return confirm(fmt(P*v)+'를 사용해 '+(v>1?v+'개를 ':'')+'구매할까요?')};upd()})();</script>`;
 };
 const payBlock = (item, shop) => {
   const hasDep = !!(shop && shop.bank && shop.account);
@@ -614,6 +708,15 @@ async function restoreStock(itemId, line) {
   const it = await store.itemById(itemId);
   if (it) await store.updateItem(itemId, { stock: [line, ...stockLines(it.stock)].join('\n'), ...(useSB ? { stock_ver: (it.stock_ver || 0) + 1 } : {}) });
 }
+
+// 꺼낸 재고 여러 줄을 되돌림
+async function restoreLines(itemId, lines) {
+  const it = await store.itemById(itemId);
+  if (it) await store.updateItem(itemId, { stock: [...lines, ...stockLines(it.stock)].join('\n'), ...(useSB ? { stock_ver: (it.stock_ver || 0) + 1 } : {}) });
+}
+// 한 주문에 지급된 개수 (재고형은 지급된 줄 수, 그 외 1)
+const orderQty = (o) => (o && o.delivered ? Math.max(1, stockLines(o.delivered).length) : 1);
+const MAX_QTY = 50;
 
 // 주문 생성 + 재고형 아이템이면 한 줄을 꺼내 구매자에게 지급
 async function placeOrder(order, item) {
@@ -952,7 +1055,7 @@ ${charges.map((c) => `<div class="card"><b>${esc(c.name)}</b> <span class="price
 <form method="post" action="/m/${shop.key}/charges/${c.token}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">충전 대기가 없어요</p>'}
 <h2>🎁 포인트 직접 조정</h2>
 <form class="card" method="post" action="/m/${shop.key}/points"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><input name="delta" type="number" placeholder="증감 (예: 1000 또는 -500)" required><input name="note" placeholder="메모 (선택)" maxlength="40"><button>조정</button></form>
-<h2>매출 ${won(total)} · 판매 ${orders.length}건</h2>
+<h2>매출 ${won(total)} · 판매 ${orders.reduce((a, o) => a + orderQty(o), 0)}건</h2>
 <h2>아이템 추가</h2>
 <form class="card" method="post" action="/m/${shop.key}/items">
 <input name="title" placeholder="제목" required maxlength="80">
@@ -1111,7 +1214,7 @@ route('GET', /^\/claim\/([\w-]+)$/, async (req, res, m) => {
   send(res, 200, page('상점 연결', `<h1>${esc(shop.name)}</h1><p class="sub">이 상점을 내 계정(${esc(u.email)})에 연결할까요? 연결하면 로그인한 나만 관리할 수 있어요.</p><form method="post" action="/m/${shop.key}/claim"><button>내 계정에 연결</button></form>`));
 });
 
-// 이 상점 포인트로 구매
+// 이 상점 포인트로 구매 (재고형 아이템은 qty개를 한 번에)
 route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=' + enc('/i/' + m[1]));
@@ -1119,28 +1222,39 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const shopB = await store.shopById(item.shop);
   if (!shopB || shopB.deleted) return notFound(res, '아이템을 찾을 수 없어요');
-  const price = Number(item.price);
+  const f = await readForm(req);
+  const multi = item.stock != null;
+  let qty = multi ? parseInt(f.qty, 10) : 1;
+  if (!(qty >= 1)) qty = 1;
+  if (qty > MAX_QTY) return send(res, 400, page('수량 초과', `<h1>한 번에 최대 ${MAX_QTY}개까지 살 수 있어요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
+  const unit = Number(item.price);
+  const total = unit * qty;
   const soldOut = () => send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
-  let line = null;
+  let lines = null;
   let soldLast = false; // 이번 구매로 재고가 0이 됐는지
-  if (item.stock != null) {
-    line = await store.popStock(item.id);
-    if (line == null) return soldOut();
+  if (multi) {
+    lines = await store.popStockN(item.id, qty);
+    if (lines == null) {
+      const now = await store.itemById(item.id);
+      const left = now && now.stock != null ? stockLines(now.stock).length : 0;
+      if (!left) return soldOut();
+      return send(res, 400, page('재고 부족', `<h1>재고가 ${left}개만 남았어요</h1><p class="sub">${qty}개는 살 수 없어요. 수량을 줄여서 다시 시도해 주세요.</p><p><a href="/i/${item.id}">돌아가기</a></p>`));
+    }
     const after = await store.itemById(item.id);
     soldLast = !!after && !stockLines(after.stock).length;
   }
-  const bal = await store.addShopPoints(u.id, item.shop, -price);
+  const bal = await store.addShopPoints(u.id, item.shop, -total);
   if (bal == null) {
-    if (line != null) await restoreStock(item.id, line);
-    return send(res, 400, page('포인트 부족', `<h1>이 상점 포인트가 부족해요</h1><p><a href="/w/${item.shop}">충전하러 가기</a></p>`));
+    if (lines) await restoreLines(item.id, lines);
+    return send(res, 400, page('포인트 부족', `<h1>이 상점 포인트가 부족해요</h1><p class="sub">${qty > 1 ? `${qty}개 ` : ''}${pts(total)}가 필요해요.</p><p><a href="/w/${item.shop}">충전하러 가기</a></p>`));
   }
-  const order = { token: rid(16), item: item.id, price, paidAt: Date.now(), buyer: u.id, ...(line != null ? { delivered: line } : {}) };
+  const order = { token: rid(16), item: item.id, price: total, paidAt: Date.now(), buyer: u.id, ...(lines ? { delivered: lines.join('\n') } : {}) };
   try { await store.createOrder(order); }
-  catch (e) { await store.addShopPoints(u.id, item.shop, price); if (line != null) await restoreStock(item.id, line); throw e; }
-  try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -price, kind: 'buy', ref: order.token, note: item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
+  catch (e) { await store.addShopPoints(u.id, item.shop, total); if (lines) await restoreLines(item.id, lines); throw e; }
+  try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -total, kind: 'buy', ref: order.token, note: qty > 1 ? `${item.title} × ${qty}` : item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
   if (item.title_id) { const t = await store.titleById(item.title_id); if (t) await store.grantTitle(u.id, t.id, item.shop); }
   const shopN = await store.shopById(item.shop);
-  await notify(shopN, `💰 새 주문! ${item.title} (${won(price)})`, 'sale');
+  await notify(shopN, `💰 새 주문! ${item.title}${qty > 1 ? ` × ${qty}` : ''} (${won(total)})`, 'sale');
   if (soldLast) await notify(shopN, `📦 재고가 0이 됐어요: ${item.title}. 재고를 채워주세요.`, 'stock');
   redirect(res, `/o/${order.token}`);
 });
@@ -1387,9 +1501,15 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
   const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
   const rmap = new Map();
   for (const r of await store.reviewsByShop(shop.id)) { const a = rmap.get(r.item) || { n: 0, sum: 0 }; a.n += 1; a.sum += r.rating; rmap.set(r.item, a); }
-  send(res, 200, page(shop.name, `<h1>${esc(shop.name)}</h1><p class="sub">링크몰 상점</p>
-<div class="card">${me ? `💰 이 상점 포인트 <b>${pts(bal)}</b> · <a href="/w/${shop.id}">충전하기</a>` : `<a href="/login?next=${enc('/s/' + shop.id)}">로그인하고 포인트 충전하기</a>`}</div>
-${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span>${rmap.get(i.id) ? ` <span class="sub">★${(rmap.get(i.id).sum / rmap.get(i.id).n).toFixed(1)} (${rmap.get(i.id).n})</span>` : ''}${i.stock != null ? (stockLines(i.stock).length ? ` <span class="sub">재고 ${stockLines(i.stock).length}개</span>` : ' <span class="sub">품절</span>') : ''}</div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
+  const card = (i) => {
+    const rv = rmap.get(i.id);
+    const left = i.stock != null ? stockLines(i.stock).length : null;
+    const stockTxt = left == null ? '무제한' : left ? `${left}개` : '품절';
+    return `<a class="pc${left === 0 ? ' off' : ''}" href="/i/${i.id}"><div class="im">${ICO.bag}</div><div class="pb"><h2>${esc(i.title)}</h2>
+<div class="rt">${ICO.star}<span>${rv ? (rv.sum / rv.n).toFixed(1) : '-'}</span>${rv ? `<span class="sm">(${rv.n})</span>` : ''}</div>
+<div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
+  };
+  send(res, 200, shopPage(shop, shop.name, items.map(card).join('') || '<p class="sm">등록된 아이템이 없어요</p>', me, bal, '/s/' + shop.id, 'items'));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
@@ -1397,18 +1517,23 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const shop = await store.shopById(item.shop);
   if (!shop || shop.deleted) return notFound(res, '아이템을 찾을 수 없어요');
-  const sold = (await store.ordersForItems([item.id])).length;
+  const sold = (await store.ordersForItems([item.id])).reduce((a, o) => a + orderQty(o), 0);
   const me = await currentUser(req);
   const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
   const reviews = await store.reviewsForItem(item.id);
   const canMod = !!me && (me.id === shop.owner || isAdmin(me));
   const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
-  send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
-<h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건${item.stock != null ? ` · 재고 ${stockLines(item.stock).length}개` : ''}</p>
-<div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
-${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}
-<h2>⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h2>
-${reviews.map((r) => `<div class="card">${stars(r.rating)} <span class="sub">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button style="background:#dc2626">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sub">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`));
+  const left = item.stock != null ? stockLines(item.stock).length : null;
+  const stockTxt = left == null ? '무제한' : left ? `${left}개` : '품절';
+  const body = `<a class="sm" style="text-decoration:none" href="/s/${shop.id}">← ${esc(shop.name)}</a>
+<div class="pc" style="margin-top:12px"><div class="im">${ICO.bag}</div><div class="pb"><h2>${esc(item.title)}</h2>
+<div class="rt">${ICO.star}<span>${reviews.length ? avg.toFixed(1) : '-'}</span>${reviews.length ? `<span class="sm">(${reviews.length})</span>` : ''}<span class="sm" style="margin-left:auto">판매 ${sold}건</span></div>
+<div class="pr"><b>${won(item.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></div>
+${item.preview ? `<div class="bx" style="white-space:pre-wrap">${esc(item.preview)}</div>` : ''}
+${left === 0 ? '<div class="nt">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}
+<h3 style="font-size:20px;margin:30px 0 10px">⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h3>
+${reviews.map((r) => `<div class="bx">${stars(r.rating)} <span class="sm">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button class="bb" style="background:#dc2626;margin-top:10px;padding:12px;font-size:15px">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sm">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`;
+  send(res, 200, shopPage(shop, item.title, body, me, bal, '/i/' + item.id, 'items'));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
@@ -1514,7 +1639,7 @@ route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
 <button>${rv ? '후기 수정' : '후기 등록'}</button><p class="sub">후기는 모든 사람에게 보여요.</p></form>`;
   }
   send(res, 200, page('내 보관함', `<h1>🔓 잠금 해제됨</h1><h2>${esc(item.title)}</h2>
-${order.delivered ? `<p class="sub">지급된 상품</p><div class="secret">${esc(order.delivered)}</div>` : (item.stock != null && order.delivered === '' ? '<div class="warn">재고가 부족해서 아직 지급되지 않았어요. 판매자가 직접 보내드려요. 판매자에게 문의해 주세요.</div>' : '')}
+${order.delivered ? `<p class="sub">지급된 상품${orderQty(order) > 1 ? ` (${orderQty(order)}개)` : ''}</p><div class="secret">${esc(order.delivered)}</div>` : (item.stock != null && order.delivered === '' ? '<div class="warn">재고가 부족해서 아직 지급되지 않았어요. 판매자가 직접 보내드려요. 판매자에게 문의해 주세요.</div>' : '')}
 ${item.secret ? `<div class="secret">${esc(item.secret)}</div>` : ''}
 <p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>
 ${reviewBox}`));
