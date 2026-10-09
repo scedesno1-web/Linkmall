@@ -108,6 +108,17 @@ const sbStore = {
   async userShopCharges(uid, shopId) { return sbGet('charges', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&status=eq.waiting&select=*&order=created.desc`); },
   async ledgerForUserShop(uid, shopId) { return sbGet('ledger', `user_id=eq.${enc(uid)}&shop=eq.${enc(shopId)}&select=*&order=created.desc&limit=30`); },
   async createCharge(c) { await sbInsert('charges', c); },
+  async reviewByToken(t) { return (await sbGet('reviews', `token=eq.${enc(t)}&select=*`))[0]; },
+  async reviewById(id) { return (await sbGet('reviews', `id=eq.${enc(id)}&select=*`))[0]; },
+  async createReview(r) { await sbInsert('reviews', r); },
+  async updateReview(id, f) { await sbPatch('reviews', `id=eq.${enc(id)}`, f); },
+  async deleteReview(id) { await sbDelete('reviews', `id=eq.${enc(id)}`); },
+  async reviewsForItem(itemId) { return sbGet('reviews', `item=eq.${enc(itemId)}&select=*&order=created.desc&limit=100`); },
+  async reviewsByShop(shopId) { return sbGet('reviews', `shop=eq.${enc(shopId)}&select=item,rating&limit=2000`); },
+  async createShopRequest(r) { try { await sbInsert('shop_requests', r); } catch (e) { if (!/23505|409|duplicate/i.test(e.message)) throw e; } },
+  async shopRequestByUser(uid) { return (await sbGet('shop_requests', `user_id=eq.${enc(uid)}&select=*`))[0]; },
+  async deleteShopRequest(uid) { await sbDelete('shop_requests', `user_id=eq.${enc(uid)}`); },
+  async listShopRequests() { return sbGet('shop_requests', 'select=*&order=created.asc&limit=100'); },
   async chargeByToken(t) { return (await sbGet('charges', `token=eq.${enc(t)}&select=*`))[0]; },
   async waitingCharges() { return sbGet('charges', 'status=eq.waiting&select=*&order=created.desc&limit=200'); },
   async userCharges(uid) { return sbGet('charges', `user_id=eq.${enc(uid)}&status=eq.waiting&select=*&order=created.desc`); },
@@ -145,21 +156,21 @@ const sbStore = {
     return null;
   },
   async itemsByShop(shopId) { return sbGet('items', `shop=eq.${enc(shopId)}&select=*&order=created.desc`); },
-  async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt, ...(o.delivered != null ? { delivered: o.delivered } : {}) }); },
+  async createOrder(o) { await sbInsert('orders', { token: o.token, item: o.item, price: o.price, paid_at: o.paidAt, ...(o.delivered != null ? { delivered: o.delivered } : {}), ...(o.buyer ? { buyer: o.buyer } : {}) }); },
   async orderByToken(t) {
     const o = (await sbGet('orders', `token=eq.${enc(t)}&select=*`))[0];
-    return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered };
+    return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered, buyer: o.buyer };
   },
   async ordersForItems(ids) {
     if (!ids.length) return [];
-    return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered }));
+    return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered, buyer: o.buyer }));
   },
 };
 
 const DB = path.join(__dirname, 'db.json');
 const load = () => { try { return JSON.parse(fs.readFileSync(DB, 'utf8')); } catch { return { shops: {}, items: {}, orders: {} }; } };
 const save = (d) => fs.writeFileSync(DB, JSON.stringify(d, null, 2));
-const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; return d; };
+const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; d.reviews = d.reviews || {}; d.shop_requests = d.shop_requests || {}; return d; };
 const fileStore = {
   async updateShop(id, f) { const d = L(); if (d.shops[id]) Object.assign(d.shops[id], f); save(d); },
   async shopsByOwner(uid) { return Object.values(L().shops).filter((s) => s.owner === uid).sort((a, b) => b.created - a.created); },
@@ -191,6 +202,17 @@ const fileStore = {
   async userShopCharges(uid, shopId) { return Object.values(L().charges).filter((c) => c.user_id === uid && c.shop === shopId && c.status === 'waiting').sort((a, b) => b.created - a.created); },
   async ledgerForUserShop(uid, shopId) { return L().ledger.filter((l) => l.user_id === uid && l.shop === shopId).sort((a, b) => b.created - a.created).slice(0, 30); },
   async createCharge(c) { const d = L(); d.charges[c.token] = c; save(d); },
+  async reviewByToken(t) { return Object.values(L().reviews).find((r) => r.token === t); },
+  async reviewById(id) { return L().reviews[id]; },
+  async createReview(r) { const d = L(); d.reviews[r.id] = r; save(d); },
+  async updateReview(id, f) { const d = L(); if (d.reviews[id]) Object.assign(d.reviews[id], f); save(d); },
+  async deleteReview(id) { const d = L(); delete d.reviews[id]; save(d); },
+  async reviewsForItem(itemId) { return Object.values(L().reviews).filter((r) => r.item === itemId).sort((a, b) => b.created - a.created).slice(0, 100); },
+  async reviewsByShop(shopId) { return Object.values(L().reviews).filter((r) => r.shop === shopId).map((r) => ({ item: r.item, rating: r.rating })); },
+  async createShopRequest(r) { const d = L(); if (!d.shop_requests[r.user_id]) d.shop_requests[r.user_id] = r; save(d); },
+  async shopRequestByUser(uid) { return L().shop_requests[uid]; },
+  async deleteShopRequest(uid) { const d = L(); delete d.shop_requests[uid]; save(d); },
+  async listShopRequests() { return Object.values(L().shop_requests).sort((a, b) => a.created - b.created); },
   async chargeByToken(t) { return L().charges[t]; },
   async waitingCharges() { return Object.values(L().charges).filter((c) => c.status === 'waiting').sort((a, b) => b.created - a.created); },
   async userCharges(uid) { return Object.values(L().charges).filter((c) => c.user_id === uid && c.status === 'waiting').sort((a, b) => b.created - a.created); },
@@ -403,6 +425,9 @@ const CHARGE_TTL = 24 * 3600 * 1000;
 const MIN_CHARGE = 1000; const MAX_CHARGE = 500000;
 const pts = (n) => Number(n || 0).toLocaleString('ko-KR') + 'P';
 const fmtDate = (t) => new Date(Number(t)).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+const FREE_SHOPS = 4; // 운영자 동의 없이 만들 수 있는 상점 수
+const shopLimit = (u) => (isAdmin(u) ? Infinity : FREE_SHOPS + Number(u.extra_shops || 0));
+const stars = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
 const SEL_STYLE = 'width:100%;padding:12px;border:1px solid #d9dce1;border-radius:10px;font-size:15px;margin:4px 0 10px';
 const badgeHtml = (name) => `<span style="display:inline-block;padding:3px 10px;border-radius:999px;background:#eef0ff;color:#4338ca;font-size:13px;margin:2px">${esc(name)}</span>`;
 const titleSelect = (titles, cur) => (titles.length ? `<select name="title_id" style="${SEL_STYLE}"><option value="">구매 시 지급할 칭호 없음</option>${titles.map((t) => `<option value="${t.id}" ${t.id === cur ? 'selected' : ''}>🏷️ ${esc(t.name)} 자동 지급</option>`).join('')}</select>` : '');
@@ -414,6 +439,7 @@ async function manageShop(req, res, key) {
   const u = await currentUser(req);
   if (!u) { redirect(res, '/login?next=' + enc('/m/' + shop.key)); return null; }
   if (isAdmin(u)) return shop;
+  if (shop.deleted) { notFound(res, '삭제된 상점이에요'); return null; }
   if (!shop.owner) { redirect(res, '/claim/' + shop.key); return null; }
   if (u.id !== shop.owner) { send(res, 403, page('권한 없음', '<h1>이 상점의 주인이 아니에요</h1>')); return null; }
   return shop;
@@ -642,14 +668,19 @@ route('POST', /^\/logout$/, (req, res) => redirect(res, '/', { 'Set-Cookie': cle
 route('GET', /^\/my$/, async (req, res) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=/my');
-  const shops = await store.shopsByOwner(u.id);
+  const q = new URL(req.url, BASE).searchParams;
+  const shops = (await store.shopsByOwner(u.id)).filter((x) => !x.deleted);
+  const limit = shopLimit(u);
+  const atLimit = shops.length >= limit;
+  const pendingReq = atLimit ? await store.shopRequestByUser(u.id) : null;
   send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
 <div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
-<form class="card" method="post" action="/shops"><b>새 상점 만들기</b><br>
+${atLimit ? `<div class="card"><b>상점은 ${limit}개까지 만들 수 있어요 (현재 ${shops.length}개)</b><p class="sub">더 만들려면 운영자의 동의가 필요해요.</p>${pendingReq ? '<p class="warn">신청이 접수됐어요. 운영자가 승인하면 상점을 만들 수 있어요.</p>' : `<form method="post" action="/my/shop-request"><textarea name="note" placeholder="상점이 더 필요한 이유" required maxlength="300"></textarea><button>상점 추가 신청</button></form>`}</div>` : `<form class="card" method="post" action="/shops"><b>새 상점 만들기</b> <span class="sub">(${shops.length}/${Number.isFinite(limit) ? limit : '제한 없음'})</span><br>
 <input name="name" placeholder="상점 이름" required maxlength="40">
 <input name="webhook" placeholder="디스코드 웹훅 URL (선택, 판매 알림용)">
-<button>상점 만들기</button></form>
+<button>상점 만들기</button></form>`}
 <form method="post" action="/logout"><button style="background:#6b7280">로그아웃</button></form>`));
 });
 
@@ -657,9 +688,21 @@ route('POST', /^\/shops$/, async (req, res) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=/my');
   const f = await readForm(req);
+  const mine = (await store.shopsByOwner(u.id)).filter((x) => !x.deleted);
+  if (mine.length >= shopLimit(u)) return redirect(res, `/my?e=${enc('상점을 더 만들려면 운영자의 동의가 필요해요')}`);
   const shop = { id: rid(4), key: rid(12), name: str(f.name, 40), webhook: str(f.webhook, 300), owner: u.id, created: Date.now() };
   await store.createShop(shop);
   redirect(res, `/m/${shop.key}`);
+});
+
+route('POST', /^\/my\/shop-request$/, async (req, res) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=/my');
+  const f = await readForm(req);
+  const mine = (await store.shopsByOwner(u.id)).filter((x) => !x.deleted);
+  if (mine.length < shopLimit(u)) return redirect(res, '/my');
+  await store.createShopRequest({ user_id: u.id, note: str(f.note, 300), created: Date.now() });
+  redirect(res, `/my?m=${enc('신청이 접수됐어요. 운영자가 확인할 때까지 기다려 주세요')}`);
 });
 
 route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
@@ -861,6 +904,8 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   if (!u) return redirect(res, '/login?next=' + enc('/i/' + m[1]));
   const item = await store.itemById(m[1]);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const shopB = await store.shopById(item.shop);
+  if (!shopB || shopB.deleted) return notFound(res, '아이템을 찾을 수 없어요');
   const price = Number(item.price);
   const soldOut = () => send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   let line = null;
@@ -870,7 +915,7 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
     if (line != null) await restoreStock(item.id, line);
     return send(res, 400, page('포인트 부족', `<h1>이 상점 포인트가 부족해요</h1><p><a href="/w/${item.shop}">충전하러 가기</a></p>`));
   }
-  const order = { token: rid(16), item: item.id, price, paidAt: Date.now(), ...(line != null ? { delivered: line } : {}) };
+  const order = { token: rid(16), item: item.id, price, paidAt: Date.now(), buyer: u.id, ...(line != null ? { delivered: line } : {}) };
   try { await store.createOrder(order); }
   catch (e) { await store.addShopPoints(u.id, item.shop, price); if (line != null) await restoreStock(item.id, line); throw e; }
   try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -price, kind: 'buy', ref: order.token, note: item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
@@ -896,7 +941,7 @@ ${cards.join('') || '<p class="sub">아직 충전한 상점이 없어요. 상점
 // 상점 전용 지갑: 충전 신청 / 입금 안내 / 내역
 route('GET', /^\/w\/([\w-]+)$/, async (req, res, m) => {
   const shop = await store.shopById(m[1]);
-  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=' + enc('/w/' + shop.id));
   const q = new URL(req.url, BASE).searchParams;
@@ -922,7 +967,7 @@ ${log.map((l) => `<div class="card"><span class="sub">${fmtDate(l.created)}</spa
 
 route('POST', /^\/w\/([\w-]+)\/charge$/, async (req, res, m) => {
   const shop = await store.shopById(m[1]);
-  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=' + enc('/w/' + shop.id));
   const f = await readForm(req);
@@ -1013,16 +1058,41 @@ route('GET', /^\/admin$/, async (req, res) => {
   const search = str(q.get('q'), 50);
   const users = await store.listUsers(search);
   const shops = await store.allShops();
+  const reqs = await store.listShopRequests();
   const emailMap = new Map(users.map((x) => [x.id, x.email]));
+  for (const r of reqs) if (!emailMap.has(r.user_id)) { const x = await store.userById(r.user_id); if (x) emailMap.set(x.id, x.email); }
   const emailOf = (id) => emailMap.get(id) || (id ? id.slice(0, 8) : '없음');
   send(res, 200, page('운영자', `<a class="sub" href="/my">← 내 상점</a><h1>👑 운영자</h1>
 ${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+<h2>📨 상점 추가 신청 ${reqs.length}건</h2>
+${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span class="sub" style="white-space:pre-wrap">${esc(r.note)}</span>
+<form method="post" action="/admin/requests/${r.user_id}/approve"><button>승인 (상점 1개 더 허용)</button></form>
+<form method="post" action="/admin/requests/${r.user_id}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">신청이 없어요</p>'}
 <h2>🏪 상점 (${shops.length})</h2>
-${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b><br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a> · <a href="/s/${sh.id}">보기</a></div>`).join('') || '<p class="sub">상점이 없어요</p>'}
+${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b>${sh.deleted ? ' 🗑️ 삭제됨' : ''}<br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a>${sh.deleted ? '' : ` · <a href="/s/${sh.id}">보기</a>`}
+${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || '<p class="sub">상점이 없어요</p>'}
 <h2>👥 사용자</h2>
 <form method="get" action="/admin"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
 ${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
 ${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+});
+
+route('POST', /^\/admin\/shops\/([\w-]+)\/(delete|restore)$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const sh = await store.shopById(m[1]);
+  if (!sh) return redirect(res, `/admin?e=${enc('상점을 찾을 수 없어요')}`);
+  await store.updateShop(sh.id, { deleted: m[2] === 'delete' });
+  redirect(res, `/admin?m=${enc(m[2] === 'delete' ? '상점을 삭제했어요' : '상점을 복구했어요')}`);
+});
+
+route('POST', /^\/admin\/requests\/([\w-]+)\/(approve|reject)$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const target = await store.userById(m[1]);
+  if (target && m[2] === 'approve') await store.updateUser(target.id, { extra_shops: Number(target.extra_shops || 0) + 1 });
+  await store.deleteShopRequest(m[1]);
+  redirect(res, `/admin?m=${enc(m[2] === 'approve' ? '승인했어요. 상점을 1개 더 만들 수 있어요' : '신청을 거절했어요')}`);
 });
 
 route('POST', /^\/admin\/users\/([\w-]+)\/ban$/, async (req, res, m) => {
@@ -1039,26 +1109,34 @@ route('POST', /^\/admin\/users\/([\w-]+)\/ban$/, async (req, res, m) => {
 
 route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
   const shop = await store.shopById(m[1]);
-  if (!shop) return notFound(res, '상점을 찾을 수 없어요');
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
   const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
   const me = await currentUser(req);
   const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
+  const rmap = new Map();
+  for (const r of await store.reviewsByShop(shop.id)) { const a = rmap.get(r.item) || { n: 0, sum: 0 }; a.n += 1; a.sum += r.rating; rmap.set(r.item, a); }
   send(res, 200, page(shop.name, `<h1>${esc(shop.name)}</h1><p class="sub">링크몰 상점</p>
 <div class="card">${me ? `💰 이 상점 포인트 <b>${pts(bal)}</b> · <a href="/w/${shop.id}">충전하기</a>` : `<a href="/login?next=${enc('/s/' + shop.id)}">로그인하고 포인트 충전하기</a>`}</div>
-${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span>${i.stock != null ? (stockLines(i.stock).length ? ` <span class="sub">재고 ${stockLines(i.stock).length}개</span>` : ' <span class="sub">품절</span>') : ''}</div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
+${items.map((i) => `<a href="/i/${i.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(i.title)}</b><br><span class="price">${won(i.price)}</span>${rmap.get(i.id) ? ` <span class="sub">★${(rmap.get(i.id).sum / rmap.get(i.id).n).toFixed(1)} (${rmap.get(i.id).n})</span>` : ''}${i.stock != null ? (stockLines(i.stock).length ? ` <span class="sub">재고 ${stockLines(i.stock).length}개</span>` : ' <span class="sub">품절</span>') : ''}</div></a>`).join('') || '<p class="sub">등록된 아이템이 없어요</p>'}`));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   const item = await store.itemById(m[1]);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
   const shop = await store.shopById(item.shop);
+  if (!shop || shop.deleted) return notFound(res, '아이템을 찾을 수 없어요');
   const sold = (await store.ordersForItems([item.id])).length;
   const me = await currentUser(req);
   const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
+  const reviews = await store.reviewsForItem(item.id);
+  const canMod = !!me && (me.id === shop.owner || isAdmin(me));
+  const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
   send(res, 200, page(item.title, `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a>
 <h1>${esc(item.title)}</h1><p class="price" style="font-size:20px">${won(item.price)}</p><p class="sub">판매 ${sold}건${item.stock != null ? ` · 재고 ${stockLines(item.stock).length}개` : ''}</p>
 <div class="card" style="white-space:pre-wrap">${esc(item.preview)}</div>
-${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}`));
+${item.stock != null && !stockLines(item.stock).length ? '<div class="warn">😢 품절이에요</div>' : pointsBlock(item, me, bal, shop)}
+<h2>⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h2>
+${reviews.map((r) => `<div class="card">${stars(r.rating)} <span class="sub">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button style="background:#dc2626">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sub">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`));
 });
 
 // ⚠️ 테스트 결제: 실제 서비스에서는 PG(토스페이먼츠/포트원) 결제 승인 확인 후에만 주문을 생성해야 합니다.
@@ -1152,10 +1230,53 @@ route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
   if (!order) return notFound(res, '주문을 찾을 수 없어요');
   const item = await store.itemById(order.item);
   if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const me = await currentUser(req);
+  let reviewBox = '';
+  if (me && order.buyer && order.buyer === me.id) {
+    const rv = await store.reviewByToken(order.token);
+    const qq = new URL(req.url, BASE).searchParams;
+    reviewBox = `<h2>⭐ 후기 ${rv ? '수정' : '남기기'}</h2>${qq.get('e') ? `<p class="warn">${esc(qq.get('e'))}</p>` : ''}
+<form class="card" method="post" action="/o/${order.token}/review">
+<select name="rating" style="${SEL_STYLE}">${[5, 4, 3, 2, 1].map((n) => `<option value="${n}" ${rv && rv.rating === n ? 'selected' : ''}>${stars(n)} (${n}점)</option>`).join('')}</select>
+<textarea name="body" placeholder="후기를 남겨주세요 (최대 300자)" maxlength="300">${esc(rv ? rv.body : '')}</textarea>
+<button>${rv ? '후기 수정' : '후기 등록'}</button><p class="sub">후기는 모든 사람에게 보여요.</p></form>`;
+  }
   send(res, 200, page('내 보관함', `<h1>🔓 잠금 해제됨</h1><h2>${esc(item.title)}</h2>
 ${order.delivered ? `<p class="sub">지급된 상품</p><div class="secret">${esc(order.delivered)}</div>` : (item.stock != null && order.delivered === '' ? '<div class="warn">재고가 부족해서 아직 지급되지 않았어요. 판매자가 직접 보내드려요. 판매자에게 문의해 주세요.</div>' : '')}
 ${item.secret ? `<div class="secret">${esc(item.secret)}</div>` : ''}
-<p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>`));
+<p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>
+${reviewBox}`));
+});
+
+// 후기 등록/수정 (구매자 본인만, 주문당 1개)
+route('POST', /^\/o\/([\w-]+)\/review$/, async (req, res, m) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/o/' + m[1]));
+  const order = await store.orderByToken(m[1]);
+  if (!order || !order.buyer || order.buyer !== u.id) return send(res, 403, page('권한 없음', '<h1>구매한 사람만 후기를 남길 수 있어요</h1>'));
+  const item = await store.itemById(order.item);
+  if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const f = await readForm(req);
+  const rating = parseInt(f.rating, 10);
+  if (!(rating >= 1 && rating <= 5)) return redirect(res, `/o/${order.token}?e=${enc('별점은 1~5점이에요')}`);
+  const body = str(f.body, 300);
+  const old = await store.reviewByToken(order.token);
+  if (old) await store.updateReview(old.id, { rating, body });
+  else await store.createReview({ id: rid(9), token: order.token, item: item.id, shop: item.shop, user_id: u.id, rating, body, created: Date.now() });
+  redirect(res, `/o/${order.token}`);
+});
+
+// 후기 삭제 (그 상점 주인 또는 운영자)
+route('POST', /^\/i\/([\w-]+)\/reviews\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=' + enc('/i/' + m[1]));
+  const item = await store.itemById(m[1]);
+  if (!item) return notFound(res, '아이템을 찾을 수 없어요');
+  const shop = await store.shopById(item.shop);
+  if (!shop || !(u.id === shop.owner || isAdmin(u))) return send(res, 403, page('권한 없음', '<h1>상점 주인이나 운영자만 후기를 삭제할 수 있어요</h1>'));
+  const rv = await store.reviewById(m[2]);
+  if (rv && rv.item === item.id) await store.deleteReview(rv.id);
+  redirect(res, `/i/${item.id}`);
 });
 
 http.createServer(async (req, res) => {
