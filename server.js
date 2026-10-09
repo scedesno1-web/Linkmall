@@ -363,6 +363,13 @@ body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
 .dr h3{font-size:22px;margin:30px 0 12px 12px}
 .pc{display:block;background:#fafafa;border:1px solid #f0f0f0;border-radius:28px;box-shadow:0 3px 12px rgba(0,0,0,.08);margin:0 0 22px;overflow:hidden;text-decoration:none;color:inherit}
 .pc.off{opacity:.55}
+.pg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pg .pc{margin:0;border-radius:18px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
+.pg .im{aspect-ratio:1/1}.pg .im svg{width:36px;height:36px}
+.pg .pb{padding:12px 12px 14px}
+.pg .pb h2{font-size:15px;margin:0 0 6px;line-height:1.3;min-height:2.6em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-all}
+.pg .rt{font-size:13px;gap:4px;margin-bottom:8px}.pg .rt svg{width:15px;height:15px}
+.pg .pr{flex-direction:column;align-items:flex-start;gap:2px}.pg .pr>b{font-size:17px}.pg .pr span{font-size:12px}
 .im{background:#f4f4f4;aspect-ratio:16/9;display:grid;place-items:center;color:#71717a;border-bottom:1px solid #ececec}
 .pb{padding:22px 24px 24px}.pb h2{font-size:22px;margin:0 0 12px}
 .rt{display:flex;align-items:center;gap:8px;font-size:17px;margin-bottom:14px;color:#3f3f46}.rt svg{fill:#facc15}
@@ -1509,7 +1516,7 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
 <div class="rt">${ICO.star}<span>${rv ? (rv.sum / rv.n).toFixed(1) : '-'}</span>${rv ? `<span class="sm">(${rv.n})</span>` : ''}</div>
 <div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
   };
-  send(res, 200, shopPage(shop, shop.name, items.map(card).join('') || '<p class="sm">등록된 아이템이 없어요</p>', me, bal, '/s/' + shop.id, 'items'));
+  send(res, 200, shopPage(shop, shop.name, (items.length ? `<div class="pg">${items.map(card).join('')}</div>` : '<p class="sm">등록된 아이템이 없어요</p>'), me, bal, '/s/' + shop.id, 'items'));
 });
 
 route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
