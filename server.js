@@ -333,16 +333,23 @@ const js = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 const BANKS = { '02': '산업은행', '03': '기업은행', '06': '국민은행', '07': '수협은행', '11': '농협은행', '20': '우리은행', '23': 'SC제일은행', '31': '대구은행', '32': '부산은행', '34': '광주은행', '35': '제주은행', '37': '전북은행', '39': '경남은행', '45': '새마을금고', '48': '신협', '71': '우체국', '81': '하나은행', '88': '신한은행', '89': '케이뱅크', '90': '카카오뱅크', '92': '토스뱅크' };
 
 const css = `
-*{box-sizing:border-box}body{margin:0;font-family:-apple-system,"Noto Sans KR",sans-serif;background:#f5f6f8;color:#1b1d21}
-.w{max-width:520px;margin:0 auto;padding:20px 16px 60px}h1{font-size:22px;margin:8px 0 4px}h2{font-size:17px;margin:24px 0 8px}
-.card{background:#fff;border-radius:14px;padding:16px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-input,textarea{width:100%;padding:12px;border:1px solid #d9dce1;border-radius:10px;font-size:15px;margin:4px 0 10px;font-family:inherit}
-textarea{min-height:90px}button,.btn{display:inline-block;background:#4f46e5;color:#fff;border:0;border-radius:10px;padding:12px 16px;font-size:15px;font-weight:600;text-decoration:none;cursor:pointer;width:100%;text-align:center}
-.sub{color:#6b7280;font-size:13px}.price{font-weight:700;color:#4f46e5}.lock{background:#eef0ff;border-radius:10px;padding:12px;color:#4f46e5;font-size:14px}
-.secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:10px;padding:14px}code{background:#eee;padding:2px 6px;border-radius:6px;word-break:break-all}
-a{color:#4f46e5}.warn{background:#fff7ed;color:#9a3412;border-radius:10px;padding:10px;font-size:13px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;background:#fff;color:#18181b}
+.top{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #eee}
+.top .logo{flex:1;font-size:18px;font-weight:800;text-decoration:none;color:#18181b}
+.chip{font-size:13px;font-weight:700;background:#f4f4f5;color:#18181b;border-radius:999px;padding:9px 13px;text-decoration:none;white-space:nowrap}
+.w{max-width:560px;margin:0 auto;padding:18px 18px 70px}
+h1{font-size:24px;margin:10px 0 6px}h2{font-size:19px;margin:28px 0 10px}
+.card{background:#fafafa;border:1px solid #f0f0f0;border-radius:22px;padding:18px;margin:12px 0;box-shadow:0 3px 12px rgba(0,0,0,.06)}
+input,textarea,select{width:100%;padding:14px;border:1px solid #e4e4e7;border-radius:16px;font-size:15px;margin:4px 0 10px;font-family:inherit;background:#fff;color:#18181b}
+input:focus,textarea:focus,select:focus{outline:2px solid #18181b;border-color:#18181b}
+textarea{min-height:90px}
+button,.btn{display:inline-block;background:#18181b;color:#fff;border:0;border-radius:18px;padding:15px 16px;font-size:16px;font-weight:700;text-decoration:none;cursor:pointer;width:100%;text-align:center;font-family:inherit}
+.sub{color:#71717a;font-size:13px}.price{font-weight:700;color:#18181b}.lock{background:#f4f4f5;border-radius:16px;padding:14px;color:#18181b;font-size:14px}
+.secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:16px;padding:14px}code{background:#f4f4f5;padding:2px 6px;border-radius:8px;word-break:break-all}
+a{color:#18181b}.btn,.logo,.chip{text-decoration:none}.warn{background:#fff7ed;color:#9a3412;border-radius:16px;padding:13px 16px;font-size:13px}
 `;
-const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><title>${esc(title)}</title><style>${css}</style></head><body><div class="w">${body}</div></body></html>`;
+const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><title>${esc(title)}</title><style>${css}</style></head><body><div class="top"><a class="logo" href="/">🔗 링크몰</a><a class="chip" href="/my">내 상점</a></div><div class="w">${body}</div></body></html>`;
 
 // ---------- 상점 화면 테마 (모바일 앱 느낌: 상단바 + 왼쪽 메뉴 + 큰 카드) ----------
 const shopCss = `
