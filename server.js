@@ -1676,15 +1676,37 @@ route('GET', /^\/s\/([\w-]+)\/stats$/, async (req, res, m) => {
   }
   const weekTotal = days.reduce((a, d) => a + d.n, 0);
   const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
-  const max = Math.max(1, ...days.map((d) => d.n));
   const W = 320, H = 170, bw = 28, gap = (W - bw * 7) / 8, base = 138, top = 26;
-  const bars = days.map((d, n) => {
-    const x = gap + n * (bw + gap), h = d.n ? Math.max(6, Math.round((base - top) * d.n / max)) : 0;
-    return `<g><rect x="${x}" y="${base - h}" width="${bw}" height="${h}" rx="8" fill="${d.today ? '#18181b' : '#a1a1aa'}"${d.future ? ' opacity=".35"' : ''}/>${!d.future ? `<text x="${x + bw / 2}" y="${base - h - 7}" text-anchor="middle" font-size="12" font-weight="700" fill="#18181b">${d.n}</text>` : ''}<text x="${x + bw / 2}" y="${base + 17}" text-anchor="middle" font-size="12" font-weight="${d.today ? 800 : 500}" fill="${d.today ? '#18181b' : '#71717a'}">${d.label}</text><text x="${x + bw / 2}" y="${base + 31}" text-anchor="middle" font-size="9.5" fill="#a1a1aa">${d.md}</text></g>`;
-  }).join('');
+  const chart = (vals, fmt) => { const mx = Math.max(1, ...vals); return days.map((d, n) => { const v = vals[n];
+    const x = gap + n * (bw + gap), h = v ? Math.max(6, Math.round((base - top) * v / mx)) : 0;
+    return `<g><rect x="${x}" y="${base - h}" width="${bw}" height="${h}" rx="8" fill="${d.today ? '#18181b' : '#a1a1aa'}"${d.future ? ' opacity=".35"' : ''}/>${!d.future ? `<text x="${x + bw / 2}" y="${base - h - 7}" text-anchor="middle" font-size="12" font-weight="700" fill="#18181b">${fmt(v)}</text>` : ''}<text x="${x + bw / 2}" y="${base + 17}" text-anchor="middle" font-size="12" font-weight="${d.today ? 800 : 500}" fill="${d.today ? '#18181b' : '#71717a'}">${d.label}</text><text x="${x + bw / 2}" y="${base + 31}" text-anchor="middle" font-size="9.5" fill="#a1a1aa">${d.md}</text></g>`;
+  }).join(''); };
+  const bars = chart(days.map((d) => d.n), String);
+  // 매출은 이 상점 주인과 운영자에게만 (비공개 상품 매출도 포함)
+  const canRev = !!me && (me.id === shop.owner || isAdmin(me));
+  let revBlock = '';
+  if (canRev) {
+    const allItems = await store.itemsByShop(shop.id);
+    const titleOf = new Map(allItems.map((i) => [i.id, i.title]));
+    const rOrders = await store.ordersForItems(allItems.map((i) => i.id));
+    const dayRev = days.map(() => 0); const itemRev = new Map(); let revTotal = 0;
+    for (const o of rOrders) {
+      const p = Number(o.price) || 0; revTotal += p; itemRev.set(o.item, (itemRev.get(o.item) || 0) + p);
+      const k = days.findIndex((d) => d.key === dayKey(o.paidAt)); if (k >= 0) dayRev[k] += p;
+    }
+    const short = (n) => (n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, '') + '만' : n.toLocaleString('ko-KR'));
+    const rrank = [...itemRev.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const rmx = Math.max(1, ...rrank.map((r) => r[1]));
+    revBlock = `<div class="bx" style="border-color:#18181b"><b style="font-size:17px">💰 매출</b> <span class="sm">판매자·운영자에게만 보여요</span>
+<div class="sg" style="margin-top:12px"><div class="bx" style="margin:0;background:#fff"><span class="sm">총 매출</span><b class="sv" style="font-size:22px">${won(revTotal)}</b></div><div class="bx" style="margin:0;background:#fff"><span class="sm">이번 주 매출</span><b class="sv" style="font-size:22px">${won(dayRev.reduce((a, b) => a + b, 0))}</b></div></div>
+<svg viewBox="0 0 ${W} ${H + 10}" width="100%" role="img" aria-label="이번 주 날짜별 매출 그래프" style="margin-top:10px;display:block"><line x1="8" y1="${base}" x2="${W - 8}" y2="${base}" stroke="#e4e4e7"/>${chart(dayRev, short)}</svg>
+<b style="font-size:15px;display:block;margin-top:6px">상품별 매출</b>
+${rrank.length ? rrank.map(([id, v]) => `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;gap:10px;font-size:14px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleOf.get(id) || '')}</span><b>${won(v)}</b></div><div style="height:8px;border-radius:4px;background:#e4e4e7;margin-top:5px;overflow:hidden"><div style="height:100%;width:${Math.round(100 * v / rmx)}%;background:#18181b;border-radius:4px"></div></div></div>`).join('') : '<p class="sm">아직 매출이 없어요</p>'}</div>`;
+  }
   const rank = items.map((i) => ({ i, n: sold.get(i.id) || 0 })).sort((a, b) => b.n - a.n).slice(0, 10);
   const rmax = Math.max(1, ...rank.map((r) => r.n));
   const body = `<h1 style="font-size:24px;margin:6px 0 14px">${ICO.chart} 통계</h1>
+${revBlock}
 <div class="sg"><div class="bx"><span class="sm">평점</span><b class="sv">${reviews.length ? '★ ' + avg.toFixed(1) : '-'}</b><span class="sm">후기 ${reviews.length}개</span></div>
 <div class="bx"><span class="sm">총 팔린 횟수</span><b class="sv">${total.toLocaleString('ko-KR')}</b><span class="sm">지금까지</span></div></div>
 <div class="bx"><div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:17px">이번 주 판매</b><span class="sm">${weekTotal}번 팔렸어요</span></div>
