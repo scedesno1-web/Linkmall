@@ -46,6 +46,13 @@ const sbStore = {
   async createNotice(n) { await sbInsert('notices', n); },
   async noticeById(id) { return (await sbGet('notices', `id=eq.${enc(id)}&select=*`))[0]; },
   async deleteNotice(id) { await sbDelete('notices', `id=eq.${enc(id)}`); },
+  // 문의: shop 이 비어 있으면 운영자에게 보낸 문의
+  async createInquiry(q) { await sbInsert('inquiries', q); },
+  async inquiryById(id) { return (await sbGet('inquiries', `id=eq.${enc(id)}&select=*`))[0]; },
+  async updateInquiry(id, f) { await sbPatch('inquiries', `id=eq.${enc(id)}`, f); },
+  async deleteInquiry(id) { await sbDelete('inquiries', `id=eq.${enc(id)}`); },
+  async listInquiries(shop) { return sbGet('inquiries', `${shop ? `shop=eq.${enc(shop)}` : 'shop=is.null'}&select=*&order=created.desc&limit=200`); },
+  async inquiriesByUser(uid, shop) { return sbGet('inquiries', `user_id=eq.${enc(uid)}&${shop ? `shop=eq.${enc(shop)}` : 'shop=is.null'}&select=*&order=created.desc&limit=50`); },
   async updateShop(id, f) { await sbPatch('shops', `id=eq.${enc(id)}`, f); },
   async shopsByOwner(uid) { return sbGet('shops', `owner=eq.${enc(uid)}&select=*&order=created.desc`); },
   async shopBySms(t) { return (await sbGet('shops', `sms_token=eq.${enc(t)}&select=*`))[0]; },
@@ -87,6 +94,7 @@ const sbStore = {
     await sbDelete('user_titles', `user_id=eq.${e}`);
     await sbDelete('charges', `user_id=eq.${e}&status=eq.waiting`);
     await sbDelete('shop_requests', `user_id=eq.${e}`);
+    try { await sbDelete('inquiries', `user_id=eq.${e}`); } catch (x) { console.error('문의 삭제 실패 (inquiries 표가 있나요?)', x.message); }
     await sbDelete('users', `id=eq.${e}`);
   },
   async purgeShop(id) { // 상점 영구 삭제: 상점과 딸린 기록(아이템·주문·후기·입금·충전·포인트·칭호·내역)을 전부 지움. 자식 → 부모 순서
@@ -95,6 +103,7 @@ const sbStore = {
     for (let n = 0; n < ids.length; n += 50) await sbDelete('orders', `item=in.(${ids.slice(n, n + 50).map(enc).join(',')})`);
     for (const t of ['reviews', 'user_titles', 'titles', 'shop_points', 'charges', 'deposits', 'ledger', 'items']) await sbDelete(t, `shop=eq.${e}`);
     try { await sbDelete('notices', `shop=eq.${e}`); } catch (x) { console.error('공지 삭제 실패 (notices 표가 있나요?)', x.message); }
+    try { await sbDelete('inquiries', `shop=eq.${e}`); } catch (x) { console.error('문의 삭제 실패 (inquiries 표가 있나요?)', x.message); }
     await sbDelete('shops', `id=eq.${e}`);
   },
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
@@ -240,7 +249,7 @@ const sbStore = {
 const DB = path.join(__dirname, 'db.json');
 const load = () => { try { return JSON.parse(fs.readFileSync(DB, 'utf8')); } catch { return { shops: {}, items: {}, orders: {} }; } };
 const save = (d) => fs.writeFileSync(DB, JSON.stringify(d, null, 2));
-const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; d.reviews = d.reviews || {}; d.shop_requests = d.shop_requests || {}; d.licenses = d.licenses || {}; return d; };
+const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; d.reviews = d.reviews || {}; d.shop_requests = d.shop_requests || {}; d.licenses = d.licenses || {}; d.inquiries = d.inquiries || {}; return d; };
 const fileStore = {
   async updateShop(id, f) { const d = L(); if (d.shops[id]) Object.assign(d.shops[id], f); save(d); },
   async shopsByOwner(uid) { return Object.values(L().shops).filter((s) => s.owner === uid).sort((a, b) => b.created - a.created); },
@@ -259,6 +268,12 @@ const fileStore = {
   async createNotice(n) { const d = L(); d.notices = d.notices || {}; d.notices[n.id] = n; save(d); },
   async noticeById(id) { const d = L(); return (d.notices || {})[id]; },
   async deleteNotice(id) { const d = L(); if (d.notices) delete d.notices[id]; save(d); },
+  async createInquiry(q) { const d = L(); d.inquiries[q.id] = q; save(d); },
+  async inquiryById(id) { return L().inquiries[id]; },
+  async updateInquiry(id, f) { const d = L(); if (d.inquiries[id]) Object.assign(d.inquiries[id], f); save(d); },
+  async deleteInquiry(id) { const d = L(); delete d.inquiries[id]; save(d); },
+  async listInquiries(shop) { return Object.values(L().inquiries).filter((x) => (x.shop || null) === (shop || null)).sort((a, b) => b.created - a.created).slice(0, 200); },
+  async inquiriesByUser(uid, shop) { return Object.values(L().inquiries).filter((x) => x.user_id === uid && (x.shop || null) === (shop || null)).sort((a, b) => b.created - a.created).slice(0, 50); },
   async shopById(id) { return load().shops[id]; },
   async shopByKey(key) { return Object.values(load().shops).find((s) => s.key === key); },
   async createItem(i) { const d = load(); d.items[i.id] = i; save(d); },
@@ -272,6 +287,7 @@ const fileStore = {
     d.user_titles = d.user_titles.filter((x) => x.user_id !== id);
     for (const [k, c] of Object.entries(d.charges)) if (c.user_id === id && c.status === 'waiting') delete d.charges[k];
     delete d.shop_requests[id];
+    for (const [k, x] of Object.entries(d.inquiries)) if (x.user_id === id) delete d.inquiries[k];
     delete d.users[id];
     save(d);
   },
@@ -289,6 +305,7 @@ const fileStore = {
     for (const k of Object.keys(d.shop_points)) if (k.endsWith('|' + id)) delete d.shop_points[k];
     d.ledger = d.ledger.filter((l) => l.shop !== id);
     for (const [k, n] of Object.entries(d.notices || {})) if (n.shop === id) delete d.notices[k];
+    for (const [k, x] of Object.entries(d.inquiries)) if (x.shop === id) delete d.inquiries[k];
     delete d.shops[id];
     save(d);
   },
@@ -463,6 +480,7 @@ const ICO = {
   coin: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5h4a1.75 1.75 0 0 1 0 3.5h-3a1.75 1.75 0 0 0 0 3.5h4"/></svg>',
   cube: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
   chart: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  chat: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
   star: '<svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17.4 6.1 20.7l1.3-6.6L2.5 9.5l6.6-.8z"/></svg>',
 };
 // 상점 메뉴(옆 서랍) 카테고리: 판매자가 만들고, 이름을 바꾸고, 각 카테고리에 뜰 상품을 고름. shops.cats 에 JSON 문자열로 저장
@@ -491,6 +509,7 @@ const shopPage = (shop, title, body, me, bal, next, active = 'home', groups = []
 <nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(shop.name)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
 <a class="nv${active === 'stats' ? ' on' : ''}" href="/s/${shop.id}/stats">${ICO.chart}통계</a>
 <a class="nv" href="/w/${shop.id}">${ICO.coin}포인트 충전</a>
+<a class="nv" href="/s/${shop.id}/inquiry">${ICO.chat}문의하기</a>
 ${groups.map((g, n) => `${n === 0 ? `<div class="sm" style="margin:30px 0 -22px 12px;font-size:13px">${esc(shop.name)}</div>` : ''}<h3${n ? ' style="margin-top:20px"' : ''}>${esc(g.name)}</h3>
 ${g.items.length ? g.items.map((i) => `<a class="nv${i.id === curId ? ' on' : ''}" href="/i/${i.id}">${ICO.cube}${esc(i.title)}</a>`).join('') : '<p class="sm" style="margin:0 0 0 14px">등록된 상품이 없어요</p>'}`).join('')}</nav>
 <div class="main">${body}</div><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
@@ -630,7 +649,7 @@ ${curId ? '<label style="display:flex;gap:8px;align-items:center;margin:0 0 6px"
 <span class="sub">사진은 자동으로 줄여서 올려요</span></div>
 <script>(function(){var f=document.getElementById('imf'),v=document.getElementById('imv'),p=document.getElementById('imp');f.onchange=function(){var file=f.files[0];if(!file)return;var r=new FileReader();r.onload=function(){var im=new Image();im.onload=function(){var s=Math.min(1,640/Math.max(im.width,im.height));var c=document.createElement('canvas');c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(im,0,0,c.width,c.height);var d=c.toDataURL('image/jpeg',0.72);v.value=d;p.src=d;p.style.display='block'};im.onerror=function(){alert('이 사진은 읽을 수 없어요');f.value='';v.value=''};im.src=r.result};r.readAsDataURL(file)}})();</script>`;
 
-const NOTI = { sale: '💰 판매 (새 주문)', deposit: '⏳ 입금 대기 (계좌 입금 주문)', charge: '⏳ 포인트 충전 신청', stock: '📦 재고 알림 (재고가 0이 됐을 때)', review: '⭐ 후기 (새 후기가 달렸을 때)' };
+const NOTI = { sale: '💰 판매 (새 주문)', deposit: '⏳ 입금 대기 (계좌 입금 주문)', charge: '⏳ 포인트 충전 신청', stock: '📦 재고 알림 (재고가 0이 됐을 때)', review: '⭐ 후기 (새 후기가 달렸을 때)', inquiry: '💬 문의 (새 문의가 왔을 때)' };
 // 저장 형태: 주소 또는 주소#n=sale,warn  (#n= 없음 = 전부 켜짐, #n=- = 전부 꺼짐)
 const parseHook = (w) => {
   const [url, frag = ''] = String(w || '').split('#');
@@ -654,6 +673,7 @@ const MSG_DEF = {
   charge: { vars: { name: '입금자명', price: '충전 금액', shop: '상점 이름' }, example: '⏳ 충전 신청: {name} · {price}', sample: { name: '홍길동', price: '10,000원', shop: '내 상점' } },
   stock: { vars: { item: '상품 이름', shop: '상점 이름', link: '상품 링크' }, example: '📦 재고가 0이 됐어요: {item}', sample: { item: '치킨버거', shop: '내 상점', link: BASE + '/i/abc123' } },
   review: { vars: { item: '상품 이름', stars: '별 모양 점수', rating: '점수(숫자)', body: '후기 내용', shop: '상점 이름', link: '상품 링크' }, example: '⭐ 새 후기! {item} · {stars} ({rating}점)\n{body}', sample: { item: '치킨버거', stars: '★★★★★', rating: 5, body: '맛있어요!', shop: '내 상점', link: BASE + '/i/abc123' } },
+  inquiry: { vars: { title: '문의 제목', body: '문의 내용', item: '문의한 상품 이름 (없으면 비어 있음)', shop: '상점 이름', link: '문의 확인 링크' }, example: '💬 새 문의: {title}\n{body}', sample: { title: '배송 언제 되나요?', body: '주문했는데 아직 못 받았어요', item: '치킨버거', shop: '내 상점', link: BASE + '/m/abc123' } },
 };
 const parseMsgs = (shop) => {
   try {
@@ -927,6 +947,30 @@ const noticeBlock = (list, label) => list.length ? `<div style="background:#fafa
 const noticeForm = (action) => `<form class="card" method="post" action="${action}"><input name="title" placeholder="공지 제목" required maxlength="60"><textarea name="body" placeholder="공지 내용" required maxlength="2000"></textarea><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pinned" value="1" style="width:auto;margin:0"> 📌 맨 위에 고정</label><button>공지 올리기</button></form>`;
 const noticeList = (list, action) => list.map((n) => `<div class="card tcard"><b>${n.pinned ? '📌 ' : ''}${esc(n.title)}</b> <span class="sub">${fmtDate(n.created)}</span><div style="white-space:pre-wrap;word-break:break-word;font-size:14px;margin:6px 0 10px">${esc(n.body)}</div><form method="post" action="${action}/${n.id}/delete" onsubmit="return confirm('이 공지를 삭제할까요?')"><button style="background:#dc2626;padding:10px;font-size:14px;border-radius:14px">삭제</button></form></div>`).join('') || '<p class="sub">올린 공지가 없어요</p>';
 const noticeFields = (f) => ({ title: str(f.title, 60), body: String(f.body ?? '').replace(/\r\n?/g, '\n').trim().slice(0, 2000), pinned: f.pinned === '1' || f.pinned === 'on' });
+// ---------- 문의 (구매자·회원 → 판매자 / 운영자) ----------
+// 상점 문의: 그 상점 주인(과 운영자)이 답변. 운영자 문의: 운영자가 답변 (상점 주인도 보낼 수 있음)
+const MAX_INQ_OPEN = 10; // 답변 못 받은 문의가 이만큼 쌓이면 더 못 보냄
+const INQ_SQL = "create table if not exists inquiries (id text primary key, user_id text not null, shop text, item text, item_title text, title text not null, body text not null, reply text, replied_at bigint, created bigint not null); alter table inquiries disable row level security;";
+async function safeInq(fn) { try { return await fn(); } catch (e) { console.error('문의 불러오기 실패 (inquiries 표가 있나요?)', e.message); return []; } }
+const inqFields = (f) => ({ title: str(f.title, 60), body: String(f.body ?? '').replace(/\r\n?/g, '\n').trim().slice(0, 1000) });
+const inqReplyText = (f) => String(f.reply ?? '').replace(/\r\n?/g, '\n').trim().slice(0, 1000);
+const inqDeleteForm = (q) => `<form method="post" action="/inquiries/${q.id}/delete" onsubmit="return confirm('이 문의를 삭제할까요?')" style="margin:8px 0 0"><button style="background:#f4f4f5;color:#dc2626;padding:10px;font-size:14px;border-radius:14px">삭제</button></form>`;
+const INQ_TEXT = 'white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6';
+// 문의한 사람이 보는 카드
+const inqMineCard = (q) => `<div class="card tcard"><b>${esc(q.title)}</b> <span class="sub">${fmtDate(q.created)}</span>${q.item_title ? `<br><span class="sub">📦 ${esc(q.item_title)}</span>` : ''}<div style="${INQ_TEXT};margin:6px 0 8px">${esc(q.body)}</div>${q.reply ? `<div style="background:#fff;border:1px solid #e4e4e7;border-radius:16px;padding:12px;margin:8px 0"><b style="font-size:13px">↪ 답변</b> <span class="sub">${fmtDate(q.replied_at)}</span><div style="${INQ_TEXT};margin-top:4px">${esc(q.reply)}</div></div>` : '<p class="sub" style="margin:0">⏳ 답변을 기다리고 있어요</p>'}${inqDeleteForm(q)}</div>`;
+// 답변하는 사람(판매자·운영자)이 보는 카드
+const inqStaffCard = (q, who, action) => `<div class="card tcard"><b>${q.reply ? '✅' : '🆕'} ${esc(q.title)}</b><br><span class="sub">${esc(who)} · ${fmtDate(q.created)}${q.item_title ? ' · 📦 ' + esc(q.item_title) : ''}</span><div style="${INQ_TEXT};margin:8px 0">${esc(q.body)}</div><form method="post" action="${action}/${q.id}/reply"><textarea name="reply" placeholder="답변 (최대 1000자)" required maxlength="1000">${esc(q.reply || '')}</textarea><button>${q.reply ? '답변 수정' : '답변 보내기'}</button></form>${inqDeleteForm(q)}</div>`;
+const inqForm = (action, items, selItem) => `<form class="card" method="post" action="${action}">${items ? `<select name="item" style="${SEL_STYLE}"><option value="">상품 무관 (일반 문의)</option>${items.map((i) => `<option value="${esc(i.id)}"${i.id === selItem ? ' selected' : ''}>📦 ${esc(i.title)}</option>`).join('')}</select>` : ''}<input name="title" placeholder="문의 제목" required maxlength="60"><textarea name="body" placeholder="문의 내용 (최대 1000자)" required maxlength="1000"></textarea><button>문의 보내기</button><p class="sub">답변이 오면 푸시 알림을 켜 둔 기기로 알려드리고, 이 화면에서도 볼 수 있어요.</p></form>`;
+// 새 문의를 모든 운영자에게 푸시
+async function notifyAdmins(text, url) {
+  if (!useMail) return;
+  for (const e of ADMIN_LIST) {
+    try { const a = await store.userByEmail(e); if (a) await pushToUser(a.id, { title: '링크몰 문의', body: String(text).slice(0, 200), url }); }
+    catch (x) { console.error('운영자 알림 실패', x.message); }
+  }
+}
+// 답변이 달리면 문의한 사람에게 푸시
+const notifyReplied = (q, reply, from) => pushToUser(q.user_id, { title: `${from} 답변이 도착했어요`, body: reply.slice(0, 100), url: q.shop ? `/s/${q.shop}/inquiry` : '/inquiry' }).catch((e) => console.error('답변 알림 실패', e.message));
 const newLicenseKey = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let t = ''; for (const x of crypto.randomBytes(16)) t += A[x % 32]; return `LK-${t.slice(0, 4)}-${t.slice(4, 8)}-${t.slice(8, 12)}-${t.slice(12, 16)}`; };
 const NO_LICENSE_MSG = '이 상점은 판매 이용권이 없어서 지금은 이용할 수 없어요';
 const licenseOk = async (shop) => { if (!shop || !shop.owner) return true; const o = await store.userById(shop.owner); if (!o) return false; return isAdmin(o) || Number(o.license_until) > Date.now(); };
@@ -1323,7 +1367,7 @@ route('GET', /^\/my$/, async (req, res) => {
   const siteN = await safeNotices(null);
   send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
 ${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
-${noticeBlock(siteN, '운영자 공지')}<div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
+${noticeBlock(siteN, '운영자 공지')}<div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a> · <a href="/inquiry">💬 운영자 문의</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
 ${isAdmin(u) ? '' : `<form class="card" method="post" action="/my/license"><b>🔑 판매 이용권</b><p class="sub">${licLeft > 0 ? `✅ ${Math.ceil(licLeft / 86400000)}일 남음 (${fmtDay(u.license_until)}까지)` : '⛔ 이용권이 없어요. 운영자에게 받은 키를 등록해야 판매할 수 있어요.'}</p><div class="row"><input name="key" placeholder="LK-XXXX-XXXX-XXXX-XXXX" required maxlength="40" autocapitalize="characters" autocomplete="off"><button>등록</button></div><p class="sub">내 모든 상점에 적용돼요. 키를 또 등록하면 기간이 이어서 늘어나요.</p></form>`}
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
 ${atLimit ? `<div class="card"><b>상점은 ${limit}개까지 만들 수 있어요 (현재 ${shops.length}개)</b><p class="sub">더 만들려면 운영자의 동의가 필요해요.</p>${pendingReq ? '<p class="warn">신청이 접수됐어요. 운영자가 승인하면 상점을 만들 수 있어요.</p>' : `<form method="post" action="/my/shop-request"><textarea name="note" placeholder="상점이 더 필요한 이유" required maxlength="300"></textarea><button>상점 추가 신청</button></form>`}</div>` : `<form class="card" method="post" action="/shops"><b>새 상점 만들기</b> <span class="sub">(${shops.length}/${Number.isFinite(limit) ? limit : '제한 없음'})</span><br>
@@ -1445,6 +1489,9 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   const total = orders.reduce((s, o) => s + o.price, 0);
   const waiting = await store.waitingDeposits(shop.id);
   const notices = await safeNotices(shop.id);
+  const inqs = await safeInq(() => store.listInquiries(shop.id));
+  const inqNames = new Map((await store.usersByIds([...new Set(inqs.map((x) => x.user_id))])).map((x) => [x.id, x.name]));
+  const inqWho = (id) => '회원 ' + id.slice(0, 8) + (inqNames.get(id) ? ' (' + inqNames.get(id) + ')' : '');
   const me = await currentUser(req);
   const titles = await store.titlesByShop(shop.id);
   const holders = {};
@@ -1474,6 +1521,10 @@ ${Object.keys(NOTI).map((k) => `<label style="display:block;margin-top:12px"><b>
 ${licBanner}<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
+<!--TAB:inq:💬:문의 ${inqs.filter((x) => !x.reply).length}건-->
+<h2>💬 받은 문의 (답변 대기 ${inqs.filter((x) => !x.reply).length}건)</h2>
+<p class="sub">구매자가 상점 메뉴의 "문의하기"로 보낸 문의예요. 답변을 쓰면 문의한 사람에게 푸시 알림이 가고, 문의 화면에서 볼 수 있어요.</p>
+${inqs.map((x) => inqStaffCard(x, inqWho(x.user_id), '/m/' + shop.key + '/inquiries')).join('') || '<p class="sub">받은 문의가 없어요</p>'}
 <!--TAB:notice:📢:공지-->
 <h2>📢 상점 공지</h2>
 <p class="sub">상점 첫 화면에 보여요. 📌 고정한 공지는 맨 위에 떠요. (최대 ${MAX_NOTICES}개)</p>
@@ -1991,6 +2042,8 @@ route('GET', /^\/admin$/, async (req, res) => {
   for (const o of owners) emailMap.set(o.id, o.email);
   if (sq) for (const sh of shops) if (sh.owner && !emailMap.has(sh.owner)) { const x = await store.userById(sh.owner); if (x) emailMap.set(x.id, x.email); }
   for (const r of reqs) if (!emailMap.has(r.user_id)) { const x = await store.userById(r.user_id); if (x) emailMap.set(x.id, x.email); }
+  const siteInq = await safeInq(() => store.listInquiries(null));
+  for (const r of siteInq) if (!emailMap.has(r.user_id)) { const x = await store.userById(r.user_id); if (x) emailMap.set(x.id, x.email); }
   const emailOf = (id) => emailMap.get(id) || (id ? id.slice(0, 8) : '없음');
   send(res, 200, panelPage({ title: '운영자', heading: '👑 운영자', key: 'admin', chip: { href: '/my', label: '내 상점' }, links: [{ href: '/my', label: '🏠 내 상점' }] }, `${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
 <!--TAB:reqs:📨:상점 신청 ${reqs.length}건-->
@@ -1998,6 +2051,10 @@ route('GET', /^\/admin$/, async (req, res) => {
 ${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span class="sub" style="white-space:pre-wrap">${esc(r.note)}</span>
 <form method="post" action="/admin/requests/${r.user_id}/approve"><button>승인 (상점 1개 더 허용)</button></form>
 <form method="post" action="/admin/requests/${r.user_id}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">신청이 없어요</p>'}
+<!--TAB:inq:💬:문의 ${siteInq.filter((x) => !x.reply).length}건-->
+<h2>💬 받은 문의 (답변 대기 ${siteInq.filter((x) => !x.reply).length}건)</h2>
+<p class="sub">회원과 판매자가 "운영자 문의"로 보낸 문의예요. 답변을 쓰면 문의한 사람에게 푸시 알림이 가요.</p>
+${siteInq.map((x) => inqStaffCard(x, emailOf(x.user_id), '/admin/inquiries')).join('') || '<p class="sub">받은 문의가 없어요</p>'}
 <!--TAB:shops:🏪:상점-->
 <h2>🏪 상점 (${shops.length})</h2>
 <form method="get" action="/admin"><input name="sq" placeholder="상점 이름 또는 주인 이메일 검색" value="${esc(sq)}"><input type="hidden" name="q" value="${esc(search)}"><button>검색</button>${sq ? '<p class="sub"><a href="/admin' + (search ? '?q=' + enc(search) : '') + '">검색 지우기</a></p>' : ''}</form>
@@ -2304,6 +2361,7 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
 <div class="pr">${disc ? `<span><s class="sm">${won(item.price)}</s> <b>${won(discPrice(item.price, disc))}</b> <span class="sm">(${disc}% 할인)</span></span>` : `<b>${won(item.price)}</b>`}<span>재고: <b>${stockTxt}</b></span></div></div></div>
 ${item.preview ? `<div class="bx" style="white-space:pre-wrap">${esc(item.preview)}</div>` : ''}
 ${left === 0 ? '<div class="nt">😢 품절이에요</div>' : !licOk ? '<div class="nt">⛔ 지금은 판매가 중단된 상점이에요</div>' : blockedMe ? `<div class="nt">🚫 ${BLOCKED_MSG}</div>` : pointsBlock(item, me, bal, shop, disc)}
+<p style="margin:14px 0 0"><a class="sm" href="/s/${shop.id}/inquiry?item=${item.id}">💬 이 상품 문의하기</a></p>
 <h3 style="font-size:20px;margin:30px 0 10px">⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h3>
 ${reviews.map((r) => `<div class="bx">${stars(r.rating)} <span class="sm">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button class="bb" style="background:#dc2626;margin-top:10px;padding:12px;font-size:15px">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sm">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`;
   const navItems = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
@@ -2429,6 +2487,7 @@ route('GET', /^\/o\/([\w-]+)$/, async (req, res, m) => {
 ${order.delivered ? `<p class="sub">지급된 상품${orderQty(order) > 1 ? ` (${orderQty(order)}개)` : ''}</p><div class="secret">${esc(order.delivered)}</div>` : (item.stock != null && order.delivered === '' ? '<div class="warn">재고가 부족해서 아직 지급되지 않았어요. 판매자가 직접 보내드려요. 판매자에게 문의해 주세요.</div>' : '')}
 ${item.secret ? `<div class="secret">${esc(item.secret)}</div>` : ''}
 <p class="sub">이 주소를 북마크하면 언제든 다시 볼 수 있어요: <code>${BASE}/o/${order.token}</code></p>
+${me && order.buyer === me.id && shopO && !shopO.deleted ? `<p><a href="/s/${shopO.id}/inquiry?item=${item.id}">💬 판매자에게 문의하기</a></p>` : ''}
 ${reviewBox}`), { 'Cache-Control': 'no-store' });
 });
 
@@ -2463,6 +2522,120 @@ route('POST', /^\/i\/([\w-]+)\/reviews\/([\w-]+)\/delete$/, async (req, res, m) 
   const rv = await store.reviewById(m[2]);
   if (rv && rv.item === item.id) await store.deleteReview(rv.id);
   redirect(res, `/i/${item.id}`);
+});
+
+// ---------- 문의 ----------
+// 구매자·회원 → 상점 판매자
+route('GET', /^\/s\/([\w-]+)\/inquiry$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
+  const me = await currentUser(req);
+  if (!me) return redirect(res, '/login?next=' + enc('/s/' + shop.id + '/inquiry'));
+  const q = new URL(req.url, BASE).searchParams;
+  const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
+  const selId = str(q.get('item'), 40);
+  if (selId && !items.some((i) => i.id === selId)) { const it = await store.itemById(selId); if (it && it.shop === shop.id) items.push(it); } // 링크로만 열리는 상품도 고를 수 있게
+  const mine = await safeInq(() => store.inquiriesByUser(me.id, shop.id));
+  const form = me.id === shop.owner ? `<p class="warn">내 상점이에요. 받은 문의는 <a href="/m/${shop.key}#inq">상점 관리 → 문의</a>에서 확인하세요.</p>`
+    : isBlocked(shop, me.id) ? `<p class="warn">🚫 ${BLOCKED_MSG}</p>` : inqForm('/s/' + shop.id + '/inquiry', items, selId);
+  send(res, 200, page(shop.name + ' 문의', `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a><h1>💬 판매자에게 문의</h1>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+${form}
+<h2>내 문의 내역</h2>
+${mine.map(inqMineCard).join('') || '<p class="sub">보낸 문의가 없어요</p>'}`), { 'Cache-Control': 'no-store' });
+});
+route('POST', /^\/s\/([\w-]+)\/inquiry$/, async (req, res, m) => {
+  const shop = await store.shopById(m[1]);
+  if (!shop || shop.deleted) return notFound(res, '상점을 찾을 수 없어요');
+  const me = await currentUser(req);
+  if (!me) return redirect(res, '/login?next=' + enc('/s/' + shop.id + '/inquiry'));
+  const back = (k, t) => redirect(res, `/s/${shop.id}/inquiry?${k}=${enc(t)}`);
+  if (me.id === shop.owner) return back('e', '내 상점에는 문의를 보낼 수 없어요');
+  if (isBlocked(shop, me.id)) return back('e', BLOCKED_MSG);
+  const f = await readForm(req);
+  const n = inqFields(f);
+  if (!n.title || !n.body) return back('e', '제목과 내용을 모두 적어주세요');
+  if (!sendOk('inq:' + me.id, 5, 10 * 60000)) return back('e', '문의를 너무 자주 보냈어요. 잠시 뒤에 다시 보내주세요');
+  let item = null;
+  if (f.item) { const it = await store.itemById(str(f.item, 40)); if (it && it.shop === shop.id) item = it; }
+  try {
+    if ((await store.inquiriesByUser(me.id, shop.id)).filter((x) => !x.reply).length >= MAX_INQ_OPEN) return back('e', '답변을 기다리는 문의가 너무 많아요. 답변이 온 뒤에 보내주세요');
+    await store.createInquiry({ id: rid(6), user_id: me.id, shop: shop.id, item: item ? item.id : null, item_title: item ? item.title : null, ...n, reply: null, replied_at: null, created: Date.now() });
+  } catch (e) {
+    console.error('문의 저장 실패', e.message);
+    return back('e', '문의를 저장하지 못했어요. 문의 기능이 아직 준비되지 않았을 수 있어요. 운영자에게 알려주세요');
+  }
+  notify(shop, `💬 새 문의: ${n.title}${item ? ' (' + item.title + ')' : ''}\n${n.body.slice(0, 200)}`, 'inquiry', { title: n.title, body: n.body.slice(0, 200), item: item ? item.title : '', shop: shop.name, link: BASE + '/m/' + shop.key }).catch((e) => console.error('문의 알림 실패', e.message));
+  back('m', '문의를 보냈어요. 답변이 오면 여기서 확인할 수 있어요');
+});
+
+// 회원(구매자·판매자) → 운영자
+route('GET', /^\/inquiry$/, async (req, res) => {
+  const me = await currentUser(req);
+  if (!me) return redirect(res, '/login?next=/inquiry');
+  const q = new URL(req.url, BASE).searchParams;
+  const mine = await safeInq(() => store.inquiriesByUser(me.id, null));
+  send(res, 200, page('운영자 문의', `<a class="sub" href="/my">← 내 상점</a><h1>💬 운영자에게 문의</h1>
+<p class="sub">사이트 이용, 상점 신청, 신고 등 운영자에게 하고 싶은 말을 남겨주세요. 상품이나 배송 문의는 해당 상점의 "문의하기"로 보내면 판매자가 답변해요.</p>
+${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+${isAdmin(me) ? '<p class="warn">운영자 계정이에요. 받은 문의는 <a href="/admin#inq">관리자 → 문의</a>에서 확인하세요.</p>' : inqForm('/inquiry', null, '')}
+<h2>내 문의 내역</h2>
+${mine.map(inqMineCard).join('') || '<p class="sub">보낸 문의가 없어요</p>'}`), { 'Cache-Control': 'no-store' });
+});
+route('POST', /^\/inquiry$/, async (req, res) => {
+  const me = await currentUser(req);
+  if (!me) return redirect(res, '/login?next=/inquiry');
+  const back = (k, t) => redirect(res, `/inquiry?${k}=${enc(t)}`);
+  if (isAdmin(me)) return back('e', '운영자는 운영자에게 문의할 수 없어요');
+  const n = inqFields(await readForm(req));
+  if (!n.title || !n.body) return back('e', '제목과 내용을 모두 적어주세요');
+  if (!sendOk('inq:' + me.id, 5, 10 * 60000)) return back('e', '문의를 너무 자주 보냈어요. 잠시 뒤에 다시 보내주세요');
+  try {
+    if ((await store.inquiriesByUser(me.id, null)).filter((x) => !x.reply).length >= MAX_INQ_OPEN) return back('e', '답변을 기다리는 문의가 너무 많아요. 답변이 온 뒤에 보내주세요');
+    await store.createInquiry({ id: rid(6), user_id: me.id, shop: null, item: null, item_title: null, ...n, reply: null, replied_at: null, created: Date.now() });
+  } catch (e) {
+    console.error('문의 저장 실패', e.message);
+    return back('e', '문의를 저장하지 못했어요. 문의 기능이 아직 준비되지 않았을 수 있어요. 운영자에게 알려주세요');
+  }
+  notifyAdmins(`💬 새 문의: ${n.title}\n${n.body.slice(0, 150)}`, '/admin#inq');
+  back('m', '문의를 보냈어요. 답변이 오면 여기서 확인할 수 있어요');
+});
+
+// 답변 (상점 주인 / 운영자)
+route('POST', /^\/m\/([\w-]+)\/inquiries\/([\w-]+)\/reply$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const reply = inqReplyText(await readForm(req));
+  try {
+    const q = await store.inquiryById(m[2]);
+    if (reply && q && q.shop === shop.id) { await store.updateInquiry(q.id, { reply, replied_at: Date.now() }); notifyReplied(q, reply, shop.name); }
+  } catch (e) { console.error('답변 저장 실패', e.message); }
+  redirect(res, `/m/${shop.key}#inq`);
+});
+route('POST', /^\/admin\/inquiries\/([\w-]+)\/reply$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const reply = inqReplyText(await readForm(req));
+  try {
+    const q = await store.inquiryById(m[1]);
+    if (reply && q && !q.shop) { await store.updateInquiry(q.id, { reply, replied_at: Date.now() }); notifyReplied(q, reply, '운영자'); }
+  } catch (e) { console.error('답변 저장 실패', e.message); }
+  redirect(res, '/admin#inq');
+});
+
+// 삭제: 문의한 본인, 그 상점 주인, 운영자
+route('POST', /^\/inquiries\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const me = await currentUser(req);
+  if (!me) return redirect(res, '/login?next=/my');
+  let q = null;
+  try { q = await store.inquiryById(m[1]); } catch (e) { console.error('문의 조회 실패', e.message); }
+  if (!q) return redirect(res, '/my');
+  const shop = q.shop ? await store.shopById(q.shop) : null;
+  const staff = isAdmin(me) || (!!shop && shop.owner === me.id);
+  const mineQ = q.user_id === me.id;
+  if (!staff && !mineQ) return send(res, 403, page('권한 없음', '<h1>삭제할 수 없어요</h1>'));
+  try { await store.deleteInquiry(q.id); } catch (e) { console.error('문의 삭제 실패', e.message); }
+  redirect(res, mineQ ? (shop ? `/s/${shop.id}/inquiry` : '/inquiry') : (shop ? `/m/${shop.key}#inq` : '/admin#inq'));
 });
 
 // 로그인 없이 열어둘 곳: 첫 화면, 로그인·가입, 외부 서버가 부르는 웹훅(결제·문자)
