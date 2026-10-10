@@ -415,6 +415,7 @@ body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
 .dr h3{font-size:22px;margin:30px 0 12px 12px}
 .pc{display:block;background:#fafafa;border:1px solid #f0f0f0;border-radius:28px;box-shadow:0 3px 12px rgba(0,0,0,.08);margin:0 0 22px;overflow:hidden;text-decoration:none;color:inherit}
 .pc.off{opacity:.55}
+.sb input{width:100%;padding:14px 16px;border:1px solid #e4e4e7;border-radius:16px;font-size:16px;background:#f4f4f5;color:#18181b;margin:0 0 16px;font-family:inherit;-webkit-appearance:none;appearance:none}.sb input:focus{outline:2px solid #18181b;background:#fff}
 .pg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sg .bx{margin:0;display:flex;flex-direction:column;gap:4px}.sg .sv{font-size:30px;letter-spacing:-1px}
 .pg .pc{margin:0;border-radius:18px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
 .pg .im{aspect-ratio:1/1}.pg .im svg{width:36px;height:36px}
@@ -482,6 +483,52 @@ const shopPage = (shop, title, body, me, bal, next, active = 'home', groups = []
 ${groups.map((g, n) => `${n === 0 ? `<div class="sm" style="margin:30px 0 -22px 12px;font-size:13px">${esc(shop.name)}</div>` : ''}<h3${n ? ' style="margin-top:20px"' : ''}>${esc(g.name)}</h3>
 ${g.items.length ? g.items.map((i) => `<a class="nv${i.id === curId ? ' on' : ''}" href="/i/${i.id}">${ICO.cube}${esc(i.title)}</a>`).join('') : '<p class="sm" style="margin:0 0 0 14px">등록된 상품이 없어요</p>'}`).join('')}</nav>
 <div class="main">${body}</div><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
+
+// 상품 검색(상점 첫 화면): 입력하는 대로 바로 걸러 보여줘요
+const PRODUCT_SEARCH_BOX = `<div class="sb"><input id="ps" type="search" placeholder="🔍 상품 검색" autocomplete="off" enterkeyhint="search" aria-label="상품 검색"></div>`;
+const PRODUCT_SEARCH_JS = `<p class="sm" id="pn" hidden style="text-align:center;margin:28px 0">검색 결과가 없어요</p><script>(function(){var i=document.getElementById('ps'),n=document.getElementById('pn'),c=[].slice.call(document.querySelectorAll('.pg .pc'));function f(){var q=i.value.trim().toLowerCase(),k=0;c.forEach(function(e){var h=e.querySelector('h2'),t=h?h.textContent:'',s=!q||t.toLowerCase().indexOf(q)>-1;e.style.display=s?'':'none';if(s)k++});n.hidden=k>0}i.addEventListener('input',f);i.addEventListener('search',f)})()</script>`;
+
+// 상점 관리·운영자 화면: 상점처럼 ☰(선 세 개)를 누르면 카테고리가 나오고, 고른 카테고리만 보여줘요.
+// html 안에 <!--TAB:아이디:아이콘:이름--> 표시를 넣으면 그 자리부터 다음 표시 전까지가 한 카테고리(탭)가 돼요.
+// 첫 표시 앞에 있는 내용은 모든 카테고리 위에 항상 보여요. 저장 뒤 새로고침해도 보던 카테고리가 유지돼요.
+const PANEL_CSS = `
+.ib{width:42px;height:42px;border:0;background:#f4f4f5;border-radius:13px;display:grid;place-items:center;cursor:pointer;padding:0;color:#18181b}
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
+.dr{position:fixed;top:0;left:0;bottom:0;width:min(88vw,380px);background:#fff;z-index:50;transform:translateX(-103%);transition:transform .25s;padding:24px 18px;overflow:auto}
+body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:26px}.brand img{width:44px;height:44px;border-radius:12px}.brand b{flex:1;font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nv{display:flex;align-items:center;gap:12px;padding:15px 14px;font-size:17px;text-decoration:none;border-radius:18px;margin-bottom:6px;color:#18181b}
+.nv.on{background:#18181b;color:#fff;box-shadow:0 10px 22px rgba(0,0,0,.18)}
+.nv i{font-style:normal;width:26px;text-align:center}
+.dr hr{border:0;border-top:1px solid #eee;margin:14px 0}
+.tab[hidden]{display:none}
+`;
+const panelPage = (o, html) => {
+  const re = /<!--TAB:([\w-]+):([^:]*):([^>]*?)-->/g;
+  const tabs = []; let pre = html, last = 0, mm;
+  const first = html.search(/<!--TAB:/);
+  pre = first < 0 ? html : html.slice(0, first);
+  while ((mm = re.exec(html))) {
+    if (tabs.length) tabs[tabs.length - 1].html = html.slice(last, mm.index);
+    tabs.push({ id: mm[1], icon: mm[2], label: mm[3], html: '' });
+    last = re.lastIndex;
+  }
+  if (tabs.length) tabs[tabs.length - 1].html = html.slice(last);
+  const nav = tabs.map((t) => `<a class="nv" href="#${t.id}" data-t="${t.id}"><i>${t.icon}</i>${esc(t.label)}</a>`).join('');
+  const links = (o.links || []).map((l) => `<a class="nv" href="${l.href}">${l.label}</a>`).join('');
+  const chip = o.chip ? `<a class="chip" href="${o.chip.href}">${o.chip.label}</a>` : '';
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(o.title)}</title><style>${css}${PANEL_CSS}</style></head><body>${SPLASH}
+<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><span class="logo">${esc(o.heading || o.title)}</span>${chip}</div>
+<div class="ov" onclick="document.body.classList.remove('open')"></div>
+<nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(o.heading || o.title)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
+${nav}${links ? '<hr>' + links : ''}</nav>
+<div class="w">${pre}${tabs.map((t) => `<div class="tab" id="tab-${t.id}" hidden>${t.html}</div>`).join('')}</div>
+<script>(function(){var K='tab:'+${JSON.stringify(String(o.key || 'panel'))},tabs=[].slice.call(document.querySelectorAll('.tab')),navs=[].slice.call(document.querySelectorAll('.nv[data-t]'));if(!tabs.length)return;
+function show(id,keep){var ok=false;tabs.forEach(function(t){var on=t.id==='tab-'+id;t.hidden=!on;if(on)ok=true});if(!ok){id=tabs[0].id.slice(4);tabs[0].hidden=false}navs.forEach(function(a){a.classList.toggle('on',a.getAttribute('data-t')===id)});try{sessionStorage.setItem(K,id)}catch(e){}document.body.classList.remove('open');if(!keep)window.scrollTo(0,0);try{history.replaceState(null,'','#'+id)}catch(e){}}
+navs.forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();show(a.getAttribute('data-t'))})});
+var h=location.hash.slice(1),s='';try{s=sessionStorage.getItem(K)||''}catch(e){}show(h||s,true)})()</script>
+<script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
+};
 
 const pointsBlock = (item, me, bal, shop, disc = 0) => {
   const price = Math.floor(Number(item.price) * (100 - disc) / 100);
@@ -1401,15 +1448,17 @@ ${Object.keys(NOTI).map((k) => `<label style="display:block;margin-top:12px"><b>
     ? `<form class="card" method="post" action="/m/${shop.key}/webhook"><b>웹훅 추가</b><input name="webhook" placeholder="https://discord.com/api/webhooks/..." maxlength="300" autocomplete="off" required>
 <p class="sub" style="margin:4px 0">이 웹훅으로 받을 알림</p>${notiBoxes(Object.keys(NOTI))}<button style="margin-top:8px">추가</button></form>`
     : `<p class="sub">웹훅을 ${MAX_HOOKS}개 다 등록했어요. 새로 추가하려면 하나를 삭제하세요.</p>`;
-  send(res, 200, page(shop.name, `
+  send(res, 200, panelPage({ title: shop.name, heading: shop.name + ' 관리', key: 'm-' + shop.key, chip: { href: '/s/' + shop.id, label: '상점 보기' }, links: [{ href: '/s/' + shop.id, label: '🛍️ 상점 보기' }, { href: '/my', label: '🏠 내 상점 목록' }] }, `<!--TAB:home:🏠:개요-->
 <h1>${esc(shop.name)} 관리</h1>
 ${licBanner}<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
+${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
+<!--TAB:noti:🔔:디스코드 알림-->
 <div class="card"><b>🔔 디스코드 알림</b> <span class="sub">(${hooks.length}/${MAX_HOOKS}개)</span><p class="sub">새 주문·입금·후기 알림을 받을 디스코드 웹훅 주소예요. 최대 ${MAX_HOOKS}개까지 등록할 수 있고, 웹훅마다 받을 알림 종류를 따로 고를 수 있어요.</p>
 ${hookCards}${hookAdd}
 <form method="post" action="/m/${shop.key}/webhook-test" style="margin-top:8px"><button${hooks.length ? '' : ' disabled style="background:#9ca3af"'}>테스트 알림 보내기 (하루 20번까지)</button></form></div>
 ${msgCard}
-${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
+<!--TAB:cats:📂:메뉴 카테고리-->
 <h2 id="cats">📂 메뉴 카테고리</h2>
 <p class="sub">구매자가 상점에서 옆 메뉴(☰)를 열면 보이는 목록이에요. 카테고리를 만들고, 이름을 바꾸고, 각 카테고리에 뜰 상품을 고르세요. 처음엔 "상품" 하나에 공개 상품이 전부 떠 있어요. 그것도 똑같이 이름을 바꾸거나 상품을 골라서 저장하면 돼요. 어디에도 안 넣은 공개 상품은 "그 외"에 모여요. (${parseCats(shop).length}/${MAX_CATS}개)</p>
 ${(parseCats(shop).length ? parseCats(shop) : [{ id: 'default', name: '상품', items: items.filter((i) => i.pub).map((i) => i.id), basic: true }]).map((c) => `<div class="card"><form method="post" action="/m/${shop.key}/cats/${c.id}/save"><input name="name" value="${esc(c.name)}" maxlength="20" required>
@@ -1417,6 +1466,7 @@ ${items.filter((i) => i.pub).map((i) => `<label style="display:block;padding:5px
 <button style="margin-top:8px">저장</button></form>
 ${c.basic ? '<p class="sub" style="margin:8px 0 0">기본 카테고리예요. 이름을 바꾸거나 체크를 풀고 저장하면 내 카테고리로 바뀌어요.</p>' : `<form method="post" action="/m/${shop.key}/cats/${c.id}/delete" onsubmit="return confirm('이 카테고리를 삭제할까요? (상품은 지워지지 않아요)')"><button style="margin-top:6px;background:#dc2626">카테고리 삭제</button></form>`}</div>`).join('')}
 <form class="card" method="post" action="/m/${shop.key}/cats"><input name="name" placeholder="새 카테고리 이름 (예: 음식)" required maxlength="20"><button>카테고리 만들기</button></form>
+<!--TAB:titles:🏷️:칭호-->
 <h2>🏷️ 칭호</h2>
 <form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><div class="row" style="margin-bottom:8px"><input name="discount" type="number" inputmode="numeric" min="0" max="20" placeholder="할인 % (0~20)"><input name="payback" type="number" inputmode="numeric" min="0" max="20" placeholder="페이백 % (0~20)"></div><div class="row"><input name="auto_min" type="number" inputmode="numeric" min="0" step="1000" placeholder="누적 구매 N원 이상 자동 지급 (선택)"><button>만들기</button></div></form>
 ${titles.map((t) => `<div class="card tcard"><div class="th">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span>${Number(t.discount) > 0 ? `<span class="sub" style="color:#0f766e;font-weight:700">· 할인 ${Number(t.discount)}%</span>` : ''}${Number(t.payback) > 0 ? `<span class="sub" style="color:#b45309;font-weight:700">· 페이백 ${Number(t.payback)}%</span>` : ''}${Number(t.auto_min) > 0 ? `<span class="sub" style="font-weight:700">· ${Number(t.auto_min).toLocaleString('ko-KR')}원↑ 자동</span>` : ''}<form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button>삭제</button></form></div>
@@ -1425,9 +1475,11 @@ ${titles.map((t) => `<div class="card tcard"><div class="th">${badgeHtml(t.name)
 <form method="post" action="/m/${shop.key}/titles/${t.id}/discount" class="row" style="margin-bottom:8px"><input name="discount" type="number" inputmode="numeric" min="0" max="20" value="${Number(t.discount) || 0}" style="max-width:80px;text-align:center"><span class="sub" style="white-space:nowrap">% 할인 (0~20)</span><button>저장</button></form>
 <form method="post" action="/m/${shop.key}/titles/${t.id}/grant" class="row"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><button>주기</button></form>
 ${(holders[t.id] || []).length ? `<div class="chips">${(holders[t.id] || []).map((h) => `<form method="post" action="/m/${shop.key}/titles/${t.id}/revoke" class="chip2" onsubmit="return confirm('이 회원의 칭호를 회수할까요?')"><input type="hidden" name="uid" value="${esc(h.user_id)}"><span>${esc(h.user_id.slice(0, 8))}</span><button title="회수">✕</button></form>`).join('')}</div>` : ''}</div>`).join('') || '<p class="sub">아직 칭호가 없어요</p>'}
+<!--TAB:blocks:🚫:차단-->
 <h2>🚫 차단 목록 (${blockedIds.length})</h2>
 <form class="card row" method="post" action="/m/${shop.key}/blocks"><input name="code" placeholder="차단할 회원번호 8자리" required minlength="8" maxlength="12"><button style="background:#dc2626">차단</button></form>
 ${blockedIds.length ? `<div class="chips" style="margin-bottom:12px">${blockedIds.map((id) => `<form method="post" action="/m/${shop.key}/blocks/remove" class="chip2" onsubmit="return confirm('차단을 해제할까요?')"><input type="hidden" name="uid" value="${esc(id)}"><span>${esc(id.slice(0, 8))}</span><button title="해제">✕</button></form>`).join('')}</div>` : '<p class="sub">차단한 회원이 없어요. 차단하면 이 상점에서 구매·충전을 할 수 없어요.</p>'}
+<!--TAB:money:💰:충전·포인트-->
 <h2>🏦 충전 받을 계좌</h2>
 <form class="card" method="post" action="/m/${shop.key}/pay">
 <div class="row"><input name="bank" placeholder="은행" value="${esc(shop.bank)}" maxlength="20"><input name="holder" placeholder="예금주" value="${esc(shop.holder)}" maxlength="20"></div>
@@ -1440,9 +1492,11 @@ ${c.image ? `<p style="margin:8px 0"><a href="/m/${shop.key}/charges/${c.token}/
 <form method="post" action="/m/${shop.key}/charges/${c.token}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">충전 대기가 없어요</p>'}
 <h2>🎁 포인트 직접 조정</h2>
 <form class="card" method="post" action="/m/${shop.key}/points"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><input name="delta" type="number" placeholder="증감 (예: 1000 또는 -500)" required><input name="note" placeholder="메모 (선택)" maxlength="40"><button>조정</button></form>
+<!--TAB:orders:🧾:매출·주문-->
 <h2>매출 ${won(total)} · 판매 ${orders.reduce((a, o) => a + orderQty(o), 0)}건</h2>
 <h2>🧾 최근 주문</h2>
 ${recent.map((o) => { const bc = o.buyer ? String(o.buyer).slice(0, 8) : ''; return `<div class="card tcard"><div class="row"><div style="flex:1;min-width:0"><b>${esc(titleOfItem.get(o.item) || '삭제된 상품')}</b><br><span class="sub">${won(o.price)} · ${fmtDate(o.paidAt)}<br>구매자 ${bc ? esc(bc) : '미연결'}</span></div>${bc ? (blockedIds.includes(o.buyer) ? '<span class="sub">🚫 차단됨</span>' : `<form method="post" action="/m/${shop.key}/blocks" onsubmit="return confirm('이 회원을 차단할까요?')" style="margin:0"><input type="hidden" name="code" value="${esc(bc)}"><button style="width:auto;padding:8px 14px;font-size:13px;background:#dc2626;border-radius:12px">차단</button></form>`) : ''}</div></div>`; }).join('') || '<p class="sub">아직 주문이 없어요</p>'}
+<!--TAB:items:📦:상품-->
 <h2>아이템 추가</h2>
 <form class="card" method="post" action="/m/${shop.key}/items">
 <input name="title" placeholder="제목" required maxlength="80">
@@ -1911,19 +1965,22 @@ route('GET', /^\/admin$/, async (req, res) => {
   if (sq) for (const sh of shops) if (sh.owner && !emailMap.has(sh.owner)) { const x = await store.userById(sh.owner); if (x) emailMap.set(x.id, x.email); }
   for (const r of reqs) if (!emailMap.has(r.user_id)) { const x = await store.userById(r.user_id); if (x) emailMap.set(x.id, x.email); }
   const emailOf = (id) => emailMap.get(id) || (id ? id.slice(0, 8) : '없음');
-  send(res, 200, page('운영자', `<a class="sub" href="/my">← 내 상점</a><h1>👑 운영자</h1>
-${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+  send(res, 200, panelPage({ title: '운영자', heading: '👑 운영자', key: 'admin', chip: { href: '/my', label: '내 상점' }, links: [{ href: '/my', label: '🏠 내 상점' }] }, `${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
+<!--TAB:reqs:📨:상점 신청 ${reqs.length}건-->
 <h2>📨 상점 추가 신청 ${reqs.length}건</h2>
 ${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span class="sub" style="white-space:pre-wrap">${esc(r.note)}</span>
 <form method="post" action="/admin/requests/${r.user_id}/approve"><button>승인 (상점 1개 더 허용)</button></form>
 <form method="post" action="/admin/requests/${r.user_id}/reject"><button style="background:#6b7280">거절</button></form></div>`).join('') || '<p class="sub">신청이 없어요</p>'}
+<!--TAB:shops:🏪:상점-->
 <h2>🏪 상점 (${shops.length})</h2>
 <form method="get" action="/admin"><input name="sq" placeholder="상점 이름 또는 주인 이메일 검색" value="${esc(sq)}"><input type="hidden" name="q" value="${esc(search)}"><button>검색</button>${sq ? '<p class="sub"><a href="/admin' + (search ? '?q=' + enc(search) : '') + '">검색 지우기</a></p>' : ''}</form>
 ${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b>${sh.deleted ? ' 🗑️ 삭제됨' : ''}<br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a>${sh.deleted ? '' : ` · <a href="/s/${sh.id}">보기</a>`}
 ${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form><form method="post" action="/admin/shops/${sh.id}/purge" onsubmit="return confirm('${esc(sh.name).replace(/&#39;/g, '')} 상점을 영구 삭제할까요?\\n아이템·주문·후기·충전·포인트 기록이 모두 지워지고, 구매자도 구매한 내용을 다시 볼 수 없어요. 절대 되돌릴 수 없어요.')"><button style="background:#7f1d1d;margin-top:6px">영구 삭제</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || `<p class="sub">${sq ? '검색 결과가 없어요' : '상점이 없어요'}</p>`}
+<!--TAB:keys:🔑:라이센스 키-->
 <h2>🔑 라이센스 키</h2>
 <form class="card" method="post" action="/admin/licenses"><div class="row"><input name="days" type="number" inputmode="numeric" min="1" max="36500" placeholder="기간 (일)" required><input name="count" type="number" inputmode="numeric" min="1" max="20" value="1" style="max-width:80px;text-align:center"></div><input name="note" placeholder="메모 (선택, 예: 홍길동)" maxlength="40" style="margin-top:8px"><button style="margin-top:8px">키 발급</button><p class="sub">기간은 일 단위로 마음대로 정해요. 오른쪽 칸은 발급 개수(최대 20). 영구는 36500일(100년)로 넣으세요.</p></form>
 ${licenses.map((k) => `<div class="card tcard"><code style="font-size:14px;font-weight:700;user-select:all">${esc(k.key)}</code><br><span class="sub">${Number(k.days)}일${k.note ? ' · ' + esc(k.note) : ''} · ${k.used_by ? `사용됨 (회원번호 ${esc(String(k.used_by).slice(0, 8))} · ${fmtDay(k.used_at)})` : '미사용'}</span>${k.used_by ? '' : `<div class="acts"><button type="button" style="padding:10px;font-size:14px;border-radius:14px;background:#f4f4f5;color:#18181b" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(k.key)}');this.textContent='복사됨'">복사</button><form method="post" action="/admin/licenses/delete" onsubmit="return confirm('이 키를 삭제할까요?')"><input type="hidden" name="key" value="${esc(k.key)}"><button>삭제</button></form></div>`}</div>`).join('') || '<p class="sub">발급한 키가 없어요</p>'}
+<!--TAB:users:👥:사용자-->
 <h2>👥 사용자</h2>
 <form method="get" action="/admin" class="row"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
 ${users.map((x) => { const made = shops.filter((sh) => sh.owner === x.id && !sh.deleted).length; return `<div class="card ucard"><div class="em">${esc(x.email)}${x.banned ? ' 🚫' : ''}${isAdmin(x) ? ' 👑' : ''}</div><div class="sub">회원번호 ${esc(x.id.slice(0, 8))}${x.banned ? ' · 정지됨' : ''}${Number(x.license_until) > Date.now() ? ' · 🔑 ' + fmtDay(x.license_until) + '까지' : ''}</div>
@@ -2082,7 +2139,7 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
 <div class="rt">${ICO.star}<span>${rv ? (rv.sum / rv.n).toFixed(1) : '-'}</span>${rv ? `<span class="sm">(${rv.n})</span>` : ''}</div>
 <div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
   };
-  send(res, 200, shopPage(shop, shop.name, (items.length ? `<div class="pg">${items.map(card).join('')}</div>` : '<p class="sm">등록된 아이템이 없어요</p>') + await titleRoster(shop), me, bal, '/s/' + shop.id, 'items', navGroups(shop, items)));
+  send(res, 200, shopPage(shop, shop.name, (items.length ? PRODUCT_SEARCH_BOX + `<div class="pg">${items.map(card).join('')}</div>` + PRODUCT_SEARCH_JS : '<p class="sm">등록된 아이템이 없어요</p>') + await titleRoster(shop), me, bal, '/s/' + shop.id, 'items', navGroups(shop, items)));
 });
 
 // 통계: 평점, 총 팔린 횟수, 이번 주(월~일) 날짜별 팔린 횟수 그래프, 상품별 판매
