@@ -41,6 +41,11 @@ async function sbDelete(table, query) {
 
 const sbStore = {
   async createShop(s) { await sbInsert('shops', s); },
+  // 공지: shop 이 비어 있으면 운영자 공지(모든 화면), 있으면 그 상점 공지. 맨 위 고정 → 최신 순
+  async listNotices(shop) { return sbGet('notices', `${shop ? `shop=eq.${enc(shop)}` : 'shop=is.null'}&select=*&order=pinned.desc,created.desc&limit=50`); },
+  async createNotice(n) { await sbInsert('notices', n); },
+  async noticeById(id) { return (await sbGet('notices', `id=eq.${enc(id)}&select=*`))[0]; },
+  async deleteNotice(id) { await sbDelete('notices', `id=eq.${enc(id)}`); },
   async updateShop(id, f) { await sbPatch('shops', `id=eq.${enc(id)}`, f); },
   async shopsByOwner(uid) { return sbGet('shops', `owner=eq.${enc(uid)}&select=*&order=created.desc`); },
   async shopBySms(t) { return (await sbGet('shops', `sms_token=eq.${enc(t)}&select=*`))[0]; },
@@ -89,6 +94,7 @@ const sbStore = {
     const ids = (await sbStore.itemsByShop(id)).map((i) => i.id);
     for (let n = 0; n < ids.length; n += 50) await sbDelete('orders', `item=in.(${ids.slice(n, n + 50).map(enc).join(',')})`);
     for (const t of ['reviews', 'user_titles', 'titles', 'shop_points', 'charges', 'deposits', 'ledger', 'items']) await sbDelete(t, `shop=eq.${e}`);
+    try { await sbDelete('notices', `shop=eq.${e}`); } catch (x) { console.error('공지 삭제 실패 (notices 표가 있나요?)', x.message); }
     await sbDelete('shops', `id=eq.${e}`);
   },
   async userByCode(c) { const r = await sbGet('users', `id=like.${enc(c)}*&select=*&limit=2`); return r.length === 1 ? r[0] : null; },
@@ -249,6 +255,10 @@ const fileStore = {
   async waitingDeposits(shopId) { return Object.values(L().deposits).filter((x) => x.shop === shopId && x.status === 'waiting').sort((a, b) => b.created - a.created); },
   async setDepositDone(t) { const d = L(); if (d.deposits[t]) d.deposits[t].status = 'done'; save(d); },
   async createShop(s) { const d = load(); d.shops[s.id] = s; save(d); },
+  async listNotices(shop) { const d = L(); d.notices = d.notices || {}; return Object.values(d.notices).filter((n) => (n.shop || null) === (shop || null)).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.created - a.created).slice(0, 50); },
+  async createNotice(n) { const d = L(); d.notices = d.notices || {}; d.notices[n.id] = n; save(d); },
+  async noticeById(id) { const d = L(); return (d.notices || {})[id]; },
+  async deleteNotice(id) { const d = L(); if (d.notices) delete d.notices[id]; save(d); },
   async shopById(id) { return load().shops[id]; },
   async shopByKey(key) { return Object.values(load().shops).find((s) => s.key === key); },
   async createItem(i) { const d = load(); d.items[i.id] = i; save(d); },
@@ -278,6 +288,7 @@ const fileStore = {
     d.user_titles = d.user_titles.filter((x) => x.shop !== id && !titleIds.has(x.title));
     for (const k of Object.keys(d.shop_points)) if (k.endsWith('|' + id)) delete d.shop_points[k];
     d.ledger = d.ledger.filter((l) => l.shop !== id);
+    for (const [k, n] of Object.entries(d.notices || {})) if (n.shop === id) delete d.notices[k];
     delete d.shops[id];
     save(d);
   },
@@ -908,6 +919,14 @@ const titleSelect = (titles, cur) => (titles.length ? `<select name="title_id" s
 
 // 관리 권한: 링크가 아니라 로그인한 상점 주인(또는 운영자)만
 const fmtDay = (t) => new Date(Number(t)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
+// ---------- 공지사항 (운영자 공지: 모든 상점·내 상점 화면 / 상점 공지: 그 상점 첫 화면) ----------
+const MAX_NOTICES = 30;
+const NOTICE_SQL = "create table if not exists notices (id text primary key, shop text, title text not null, body text not null, pinned boolean not null default false, created bigint not null); alter table notices disable row level security;";
+async function safeNotices(shop) { try { return await store.listNotices(shop); } catch (e) { console.error('공지 불러오기 실패 (notices 표가 있나요?)', e.message); return []; } }
+const noticeBlock = (list, label) => list.length ? `<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:22px;padding:14px 18px;margin:0 0 16px"><b>📢 ${esc(label)}</b>${list.slice(0, 5).map((n) => `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;font-size:15px">${n.pinned ? '📌 ' : ''}${esc(n.title)} <span style="color:#71717a;font-size:12px;font-weight:400">${fmtDay(n.created)}</span></summary><div style="white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6;margin-top:8px;color:#3f3f46">${esc(n.body)}</div></details>`).join('')}</div>` : '';
+const noticeForm = (action) => `<form class="card" method="post" action="${action}"><input name="title" placeholder="공지 제목" required maxlength="60"><textarea name="body" placeholder="공지 내용" required maxlength="2000"></textarea><label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pinned" value="1" style="width:auto;margin:0"> 📌 맨 위에 고정</label><button>공지 올리기</button></form>`;
+const noticeList = (list, action) => list.map((n) => `<div class="card tcard"><b>${n.pinned ? '📌 ' : ''}${esc(n.title)}</b> <span class="sub">${fmtDate(n.created)}</span><div style="white-space:pre-wrap;word-break:break-word;font-size:14px;margin:6px 0 10px">${esc(n.body)}</div><form method="post" action="${action}/${n.id}/delete" onsubmit="return confirm('이 공지를 삭제할까요?')"><button style="background:#dc2626;padding:10px;font-size:14px;border-radius:14px">삭제</button></form></div>`).join('') || '<p class="sub">올린 공지가 없어요</p>';
+const noticeFields = (f) => ({ title: str(f.title, 60), body: String(f.body ?? '').replace(/\r\n?/g, '\n').trim().slice(0, 2000), pinned: f.pinned === '1' || f.pinned === 'on' });
 const newLicenseKey = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let t = ''; for (const x of crypto.randomBytes(16)) t += A[x % 32]; return `LK-${t.slice(0, 4)}-${t.slice(4, 8)}-${t.slice(8, 12)}-${t.slice(12, 16)}`; };
 const NO_LICENSE_MSG = '이 상점은 판매 이용권이 없어서 지금은 이용할 수 없어요';
 const licenseOk = async (shop) => { if (!shop || !shop.owner) return true; const o = await store.userById(shop.owner); if (!o) return false; return isAdmin(o) || Number(o.license_until) > Date.now(); };
@@ -1301,9 +1320,10 @@ route('GET', /^\/my$/, async (req, res) => {
   const atLimit = shops.length >= limit;
   const pendingReq = atLimit ? await store.shopRequestByUser(u.id) : null;
   const licLeft = Number(u.license_until || 0) - Date.now();
+  const siteN = await safeNotices(null);
   send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
 ${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
-<div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
+${noticeBlock(siteN, '운영자 공지')}<div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
 ${isAdmin(u) ? '' : `<form class="card" method="post" action="/my/license"><b>🔑 판매 이용권</b><p class="sub">${licLeft > 0 ? `✅ ${Math.ceil(licLeft / 86400000)}일 남음 (${fmtDay(u.license_until)}까지)` : '⛔ 이용권이 없어요. 운영자에게 받은 키를 등록해야 판매할 수 있어요.'}</p><div class="row"><input name="key" placeholder="LK-XXXX-XXXX-XXXX-XXXX" required maxlength="40" autocapitalize="characters" autocomplete="off"><button>등록</button></div><p class="sub">내 모든 상점에 적용돼요. 키를 또 등록하면 기간이 이어서 늘어나요.</p></form>`}
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
 ${atLimit ? `<div class="card"><b>상점은 ${limit}개까지 만들 수 있어요 (현재 ${shops.length}개)</b><p class="sub">더 만들려면 운영자의 동의가 필요해요.</p>${pendingReq ? '<p class="warn">신청이 접수됐어요. 운영자가 승인하면 상점을 만들 수 있어요.</p>' : `<form method="post" action="/my/shop-request"><textarea name="note" placeholder="상점이 더 필요한 이유" required maxlength="300"></textarea><button>상점 추가 신청</button></form>`}</div>` : `<form class="card" method="post" action="/shops"><b>새 상점 만들기</b> <span class="sub">(${shops.length}/${Number.isFinite(limit) ? limit : '제한 없음'})</span><br>
@@ -1424,6 +1444,7 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   const orders = await store.ordersForItems(items.map((i) => i.id));
   const total = orders.reduce((s, o) => s + o.price, 0);
   const waiting = await store.waitingDeposits(shop.id);
+  const notices = await safeNotices(shop.id);
   const me = await currentUser(req);
   const titles = await store.titlesByShop(shop.id);
   const holders = {};
@@ -1453,6 +1474,11 @@ ${Object.keys(NOTI).map((k) => `<label style="display:block;margin-top:12px"><b>
 ${licBanner}<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
 ${shop.owner ? '' : (me ? `<form class="card" method="post" action="/m/${shop.key}/claim"><b>이 상점을 내 계정에 연결</b><p class="sub">연결하면 로그인한 나만 관리할 수 있어요.</p><button>내 계정에 연결</button></form>` : `<div class="warn">아직 계정에 연결되지 않은 상점이에요. <a href="/login?next=${enc('/m/' + shop.key)}">로그인</a>해서 연결하세요.</div>`)}
+<!--TAB:notice:📢:공지-->
+<h2>📢 상점 공지</h2>
+<p class="sub">상점 첫 화면에 보여요. 📌 고정한 공지는 맨 위에 떠요. (최대 ${MAX_NOTICES}개)</p>
+${noticeForm('/m/' + shop.key + '/notices')}
+${noticeList(notices, '/m/' + shop.key + '/notices')}
 <!--TAB:noti:🔔:디스코드 알림-->
 <div class="card"><b>🔔 디스코드 알림</b> <span class="sub">(${hooks.length}/${MAX_HOOKS}개)</span><p class="sub">새 주문·입금·후기 알림을 받을 디스코드 웹훅 주소예요. 최대 ${MAX_HOOKS}개까지 등록할 수 있고, 웹훅마다 받을 알림 종류를 따로 고를 수 있어요.</p>
 ${hookCards}${hookAdd}
@@ -1960,6 +1986,7 @@ route('GET', /^\/admin$/, async (req, res) => {
   const shops = sq ? await store.searchShops(sq, owners.map((o) => o.id)) : await store.allShops();
   const reqs = await store.listShopRequests();
   const licenses = await store.listLicenses();
+  const adminNotices = await safeNotices(null);
   const emailMap = new Map(users.map((x) => [x.id, x.email]));
   for (const o of owners) emailMap.set(o.id, o.email);
   if (sq) for (const sh of shops) if (sh.owner && !emailMap.has(sh.owner)) { const x = await store.userById(sh.owner); if (x) emailMap.set(x.id, x.email); }
@@ -1986,7 +2013,54 @@ ${licenses.map((k) => `<div class="card tcard"><code style="font-size:14px;font-
 ${users.map((x) => { const made = shops.filter((sh) => sh.owner === x.id && !sh.deleted).length; return `<div class="card ucard"><div class="em">${esc(x.email)}${x.banned ? ' 🚫' : ''}${isAdmin(x) ? ' 👑' : ''}</div><div class="sub">회원번호 ${esc(x.id.slice(0, 8))}${x.banned ? ' · 정지됨' : ''}${Number(x.license_until) > Date.now() ? ' · 🔑 ' + fmtDay(x.license_until) + '까지' : ''}</div>
 ${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" class="row" style="margin-top:10px"><span class="sub" style="white-space:nowrap">🏪 한도 (${made}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required style="max-width:80px;padding:11px;text-align:center"><button>저장</button></form>
 <div class="acts"><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form></div>
-<details><summary>⚠️ 더 보기 (탈퇴)</summary><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d">회원 탈퇴시키기</button></form></details>`}</div>`; }).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+<details><summary>⚠️ 더 보기 (탈퇴)</summary><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d">회원 탈퇴시키기</button></form></details>`}</div>`; }).join('') || '<p class="sub">사용자가 없어요</p>'}
+<!--TAB:notice:📢:공지-->
+<h2>📢 운영자 공지</h2>
+<p class="sub">모든 상점 첫 화면과 "내 상점" 화면에 보여요. 📌 고정한 공지는 맨 위에 떠요. (최대 ${MAX_NOTICES}개)</p>
+${noticeForm('/admin/notices')}
+${noticeList(adminNotices, '/admin/notices')}`));
+});
+
+route('POST', /^\/admin\/notices$/, async (req, res) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const n = noticeFields(await readForm(req));
+  if (!n.title || !n.body) return redirect(res, `/admin?e=${enc('제목과 내용을 모두 적어주세요')}`);
+  try {
+    if ((await store.listNotices(null)).length >= MAX_NOTICES) return redirect(res, `/admin?e=${enc(`공지는 ${MAX_NOTICES}개까지 올릴 수 있어요. 오래된 공지를 삭제해 주세요`)}`);
+    await store.createNotice({ id: rid(6), shop: null, ...n, created: Date.now() });
+  } catch (e) {
+    console.error('공지 저장 실패', e.message);
+    return redirect(res, `/admin?e=${enc('공지를 저장하지 못했어요. 데이터베이스에 공지 표가 아직 없는 것 같아요. Supabase SQL Editor에서 다음을 한 번 실행해 주세요: ' + NOTICE_SQL)}`);
+  }
+  redirect(res, `/admin?m=${enc('공지를 올렸어요')}`);
+});
+route('POST', /^\/admin\/notices\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  try { const n = await store.noticeById(m[1]); if (n && !n.shop) await store.deleteNotice(n.id); } catch (e) { console.error('공지 삭제 실패', e.message); }
+  redirect(res, `/admin?m=${enc('공지를 삭제했어요')}`);
+});
+route('POST', /^\/m\/([\w-]+)\/notices$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const back = `<p><a href="/m/${shop.key}#notice">← 상점 관리로</a></p>`;
+  const n = noticeFields(await readForm(req));
+  if (!n.title || !n.body) return send(res, 400, page('공지', `<h1>제목과 내용을 모두 적어주세요</h1>${back}`));
+  try {
+    if ((await store.listNotices(shop.id)).length >= MAX_NOTICES) return send(res, 400, page('공지', `<h1>공지는 ${MAX_NOTICES}개까지 올릴 수 있어요</h1><p class="sub">오래된 공지를 삭제한 뒤 다시 올려 주세요.</p>${back}`));
+    await store.createNotice({ id: rid(6), shop: shop.id, ...n, created: Date.now() });
+  } catch (e) {
+    console.error('공지 저장 실패', e.message);
+    return send(res, 500, page('저장 실패', `<h1>⚠️ 공지를 저장하지 못했어요</h1><p class="warn">공지 기능이 아직 준비되지 않았어요. 운영자에게 알려주세요.</p>${back}`));
+  }
+  redirect(res, `/m/${shop.key}#notice`);
+});
+route('POST', /^\/m\/([\w-]+)\/notices\/([\w-]+)\/delete$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  try { const n = await store.noticeById(m[2]); if (n && n.shop === shop.id) await store.deleteNotice(n.id); } catch (e) { console.error('공지 삭제 실패', e.message); }
+  redirect(res, `/m/${shop.key}#notice`);
 });
 
 route('POST', /^\/admin\/licenses$/, async (req, res) => {
@@ -2129,6 +2203,8 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
   const items = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
   const me = await currentUser(req);
   const bal = me ? await store.shopPoints(me.id, shop.id) : 0;
+  const siteN = await safeNotices(null);
+  const shopN = await safeNotices(shop.id);
   const rmap = new Map();
   for (const r of await store.reviewsByShop(shop.id)) { const a = rmap.get(r.item) || { n: 0, sum: 0 }; a.n += 1; a.sum += r.rating; rmap.set(r.item, a); }
   const card = (i) => {
@@ -2139,7 +2215,7 @@ route('GET', /^\/s\/([\w-]+)$/, async (req, res, m) => {
 <div class="rt">${ICO.star}<span>${rv ? (rv.sum / rv.n).toFixed(1) : '-'}</span>${rv ? `<span class="sm">(${rv.n})</span>` : ''}</div>
 <div class="pr"><b>${won(i.price)}</b><span>재고: <b>${stockTxt}</b></span></div></div></a>`;
   };
-  send(res, 200, shopPage(shop, shop.name, (items.length ? PRODUCT_SEARCH_BOX + `<div class="pg">${items.map(card).join('')}</div>` + PRODUCT_SEARCH_JS : '<p class="sm">등록된 아이템이 없어요</p>') + await titleRoster(shop), me, bal, '/s/' + shop.id, 'items', navGroups(shop, items)));
+  send(res, 200, shopPage(shop, shop.name, noticeBlock(siteN, '운영자 공지') + noticeBlock(shopN, '상점 공지') + (items.length ? PRODUCT_SEARCH_BOX + `<div class="pg">${items.map(card).join('')}</div>` + PRODUCT_SEARCH_JS : '<p class="sm">등록된 아이템이 없어요</p>') + await titleRoster(shop), me, bal, '/s/' + shop.id, 'items', navGroups(shop, items)));
 });
 
 // 통계: 평점, 총 팔린 횟수, 이번 주(월~일) 날짜별 팔린 횟수 그래프, 상품별 판매
