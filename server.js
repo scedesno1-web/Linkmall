@@ -154,6 +154,15 @@ const sbStore = {
   async deleteReview(id) { await sbDelete('reviews', `id=eq.${enc(id)}`); },
   async reviewsForItem(itemId) { return sbGet('reviews', `item=eq.${enc(itemId)}&select=*&order=created.desc&limit=100`); },
   async reviewsByShop(shopId) { return sbGet('reviews', `shop=eq.${enc(shopId)}&select=item,rating&limit=2000`); },
+  async createLicense(r) { await sbInsert('licenses', r); },
+  async listLicenses() { return sbGet('licenses', 'select=*&order=created.desc&limit=40'); },
+  async deleteUnusedLicense(k) { await sbDelete('licenses', `key=eq.${enc(k)}&used_by=is.null`); },
+  async claimLicense(k, uid) {
+    const r = await fetch(`${SB_URL}/rest/v1/licenses?key=eq.${enc(k)}&used_by=is.null`, { method: 'PATCH', headers: sbHeaders({ Prefer: 'return=representation' }), body: JSON.stringify({ used_by: uid, used_at: Date.now() }) });
+    if (!r.ok) throw new Error(`supabase PATCH licenses ${r.status} ${await r.text()}`);
+    return (await r.json())[0] || null;
+  },
+  async releaseLicense(k) { await sbPatch('licenses', `key=eq.${enc(k)}`, { used_by: null, used_at: null }); },
   async createShopRequest(r) { try { await sbInsert('shop_requests', r); } catch (e) { if (!/23505|409|duplicate/i.test(e.message)) throw e; } },
   async shopRequestByUser(uid) { return (await sbGet('shop_requests', `user_id=eq.${enc(uid)}&select=*`))[0]; },
   async deleteShopRequest(uid) { await sbDelete('shop_requests', `user_id=eq.${enc(uid)}`); },
@@ -225,7 +234,7 @@ const sbStore = {
 const DB = path.join(__dirname, 'db.json');
 const load = () => { try { return JSON.parse(fs.readFileSync(DB, 'utf8')); } catch { return { shops: {}, items: {}, orders: {} }; } };
 const save = (d) => fs.writeFileSync(DB, JSON.stringify(d, null, 2));
-const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; d.reviews = d.reviews || {}; d.shop_requests = d.shop_requests || {}; return d; };
+const L = () => { const d = load(); d.users = d.users || {}; d.deposits = d.deposits || {}; d.charges = d.charges || {}; d.ledger = d.ledger || []; d.titles = d.titles || {}; d.user_titles = d.user_titles || []; d.shop_points = d.shop_points || {}; d.reviews = d.reviews || {}; d.shop_requests = d.shop_requests || {}; d.licenses = d.licenses || {}; return d; };
 const fileStore = {
   async updateShop(id, f) { const d = L(); if (d.shops[id]) Object.assign(d.shops[id], f); save(d); },
   async shopsByOwner(uid) { return Object.values(L().shops).filter((s) => s.owner === uid).sort((a, b) => b.created - a.created); },
@@ -292,6 +301,11 @@ const fileStore = {
   async deleteReview(id) { const d = L(); delete d.reviews[id]; save(d); },
   async reviewsForItem(itemId) { return Object.values(L().reviews).filter((r) => r.item === itemId).sort((a, b) => b.created - a.created).slice(0, 100); },
   async reviewsByShop(shopId) { return Object.values(L().reviews).filter((r) => r.shop === shopId).map((r) => ({ item: r.item, rating: r.rating })); },
+  async createLicense(r) { const d = L(); d.licenses[r.key] = r; save(d); },
+  async listLicenses() { return Object.values(L().licenses).sort((a, b) => b.created - a.created).slice(0, 40); },
+  async deleteUnusedLicense(k) { const d = L(); if (d.licenses[k] && !d.licenses[k].used_by) delete d.licenses[k]; save(d); },
+  async claimLicense(k, uid) { const d = L(); const x = d.licenses[k]; if (!x || x.used_by) return null; x.used_by = uid; x.used_at = Date.now(); save(d); return x; },
+  async releaseLicense(k) { const d = L(); if (d.licenses[k]) { d.licenses[k].used_by = null; d.licenses[k].used_at = null; } save(d); },
   async createShopRequest(r) { const d = L(); if (!d.shop_requests[r.user_id]) d.shop_requests[r.user_id] = r; save(d); },
   async shopRequestByUser(uid) { return L().shop_requests[uid]; },
   async deleteShopRequest(uid) { const d = L(); delete d.shop_requests[uid]; save(d); },
@@ -834,6 +848,11 @@ const badgeHtml = (name) => `<span style="display:inline-block;padding:3px 10px;
 const titleSelect = (titles, cur) => (titles.length ? `<select name="title_id" style="${SEL_STYLE}"><option value="">구매 시 지급할 칭호 없음</option>${titles.map((t) => `<option value="${t.id}" ${t.id === cur ? 'selected' : ''}>🏷️ ${esc(t.name)} 자동 지급</option>`).join('')}</select>` : '');
 
 // 관리 권한: 링크가 아니라 로그인한 상점 주인(또는 운영자)만
+const fmtDay = (t) => new Date(Number(t)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
+const newLicenseKey = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let t = ''; for (const x of crypto.randomBytes(16)) t += A[x % 32]; return `LK-${t.slice(0, 4)}-${t.slice(4, 8)}-${t.slice(8, 12)}-${t.slice(12, 16)}`; };
+const NO_LICENSE_MSG = '이 상점은 판매 이용권이 없어서 지금은 이용할 수 없어요';
+const licenseOk = async (shop) => { if (!shop || !shop.owner) return true; const o = await store.userById(shop.owner); if (!o) return false; return isAdmin(o) || Number(o.license_until) > Date.now(); };
+const licTries = new Map(); // 키 무작위 대입 방지: 회원별 10분에 10번까지
 const parseBlocked = (shop) => { try { const a = JSON.parse((shop && shop.blocked) || '[]'); return Array.isArray(a) ? a.filter((x) => typeof x === 'string') : []; } catch { return []; } };
 const isBlocked = (shop, uid) => !!uid && parseBlocked(shop).includes(uid);
 const BLOCKED_MSG = '이 상점에서 이용이 제한됐어요';
@@ -1216,9 +1235,11 @@ route('GET', /^\/my$/, async (req, res) => {
   const limit = shopLimit(u);
   const atLimit = shops.length >= limit;
   const pendingReq = atLimit ? await store.shopRequestByUser(u.id) : null;
+  const licLeft = Number(u.license_until || 0) - Date.now();
   send(res, 200, page('내 상점', `<h1>내 상점</h1><p class="sub">${esc(u.email)} · <a href="/account">비밀번호 변경</a></p>
 ${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
 <div class="card"><a href="/wallet">💰 내 포인트 · 칭호</a>${isAdmin(u) ? ' · <a href="/admin">👑 관리자</a>' : ''}</div>
+${isAdmin(u) ? '' : `<form class="card" method="post" action="/my/license"><b>🔑 판매 이용권</b><p class="sub">${licLeft > 0 ? `✅ ${Math.ceil(licLeft / 86400000)}일 남음 (${fmtDay(u.license_until)}까지)` : '⛔ 이용권이 없어요. 운영자에게 받은 키를 등록해야 판매할 수 있어요.'}</p><div class="row"><input name="key" placeholder="LK-XXXX-XXXX-XXXX-XXXX" required maxlength="40" autocapitalize="characters" autocomplete="off"><button>등록</button></div><p class="sub">내 모든 상점에 적용돼요. 키를 또 등록하면 기간이 이어서 늘어나요.</p></form>`}
 ${shops.map((x) => `<div class="card"><b>${esc(x.name)}</b><br><a href="/m/${x.key}">관리하기</a> · <a href="/s/${x.id}">상점 보기</a></div>`).join('') || '<p class="sub">아직 상점이 없어요</p>'}
 ${atLimit ? `<div class="card"><b>상점은 ${limit}개까지 만들 수 있어요 (현재 ${shops.length}개)</b><p class="sub">더 만들려면 운영자의 동의가 필요해요.</p>${pendingReq ? '<p class="warn">신청이 접수됐어요. 운영자가 승인하면 상점을 만들 수 있어요.</p>' : `<form method="post" action="/my/shop-request"><textarea name="note" placeholder="상점이 더 필요한 이유" required maxlength="300"></textarea><button>상점 추가 신청</button></form>`}</div>` : `<form class="card" method="post" action="/shops"><b>새 상점 만들기</b> <span class="sub">(${shops.length}/${Number.isFinite(limit) ? limit : '제한 없음'})</span><br>
 <input name="name" placeholder="상점 이름" required maxlength="40">
@@ -1226,6 +1247,29 @@ ${atLimit ? `<div class="card"><b>상점은 ${limit}개까지 만들 수 있어�
 <button>상점 만들기</button></form>`}
 ${PUSH_CARD}
 <form method="post" action="/logout"><button style="background:#6b7280">로그아웃</button></form>`));
+});
+
+route('POST', /^\/my\/license$/, async (req, res) => {
+  const u = await currentUser(req);
+  if (!u) return redirect(res, '/login?next=/my');
+  const f = await readForm(req);
+  const fail = (t) => redirect(res, `/my?e=${enc(t)}`);
+  const tr = licTries.get(u.id) || { n: 0, t: Date.now() };
+  if (Date.now() - tr.t > 600000) { tr.n = 0; tr.t = Date.now(); }
+  if (tr.n >= 10) return fail('시도가 너무 많아요. 10분 뒤에 다시 해주세요');
+  const raw = String(f.key || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const key = /^LK[A-Z0-9]{16}$/.test(raw) ? `LK-${raw.slice(2, 6)}-${raw.slice(6, 10)}-${raw.slice(10, 14)}-${raw.slice(14, 18)}` : '';
+  const lic = key ? await store.claimLicense(key, u.id) : null;
+  if (!lic) { tr.n++; licTries.set(u.id, tr); return fail('없거나 이미 사용된 키예요'); }
+  try {
+    const until = Math.max(Date.now(), Number(u.license_until) || 0) + Number(lic.days) * 86400000;
+    await store.updateUser(u.id, { license_until: until });
+    redirect(res, `/my?m=${enc(`✅ 이용권이 등록됐어요 (${fmtDay(until)}까지)`)}`);
+  } catch (e) {
+    try { await store.releaseLicense(key); } catch {}
+    console.error('이용권 등록 실패', e.message);
+    fail('등록하지 못했어요. 운영자에게 문의해 주세요');
+  }
 });
 
 route('POST', /^\/shops$/, async (req, res) => {
@@ -1321,6 +1365,9 @@ route('GET', /^\/m\/([\w-]+)$/, async (req, res, m) => {
   for (const t of titles) holders[t.id] = await store.titleHolders(t.id);
   const charges = await store.shopCharges(shop.id);
   const blockedIds = parseBlocked(shop);
+  const ownerU = shop.owner ? await store.userById(shop.owner) : null;
+  const licLeftM = ownerU ? Number(ownerU.license_until || 0) - Date.now() : 0;
+  const licBanner = !shop.owner || (ownerU && isAdmin(ownerU)) ? '' : licLeftM <= 0 ? '<p class="warn">⛔ 판매 이용권이 없어서 구매·충전이 막혀 있어요. <a href="/my">내 상점에서 키 등록하기</a></p>' : licLeftM < 3 * 86400000 ? `<p class="warn">⏰ 판매 이용권이 ${Math.ceil(licLeftM / 86400000)}일 뒤 끝나요. <a href="/my">키 등록하기</a></p>` : '';
   const titleOfItem = new Map(items.map((i) => [i.id, i.title]));
   const recent = [...orders].sort((a, b) => Number(b.paidAt || 0) - Number(a.paidAt || 0)).slice(0, 20);
   const hooks = parseHooks(shop.webhook);
@@ -1338,7 +1385,7 @@ ${Object.keys(NOTI).map((k) => `<label style="display:block;margin-top:12px"><b>
     : `<p class="sub">웹훅을 ${MAX_HOOKS}개 다 등록했어요. 새로 추가하려면 하나를 삭제하세요.</p>`;
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
-<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
+${licBanner}<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
 <div class="card"><b>🔔 디스코드 알림</b> <span class="sub">(${hooks.length}/${MAX_HOOKS}개)</span><p class="sub">새 주문·입금·후기 알림을 받을 디스코드 웹훅 주소예요. 최대 ${MAX_HOOKS}개까지 등록할 수 있고, 웹훅마다 받을 알림 종류를 따로 고를 수 있어요.</p>
 ${hookCards}${hookAdd}
@@ -1544,6 +1591,7 @@ route('POST', /^\/i\/([\w-]+)\/deposit$/, async (req, res, m) => {
   const shop = await store.shopById(item.shop);
   if (!shop || !shop.bank || !shop.account) return send(res, 400, page('오류', '<h1>이 상점은 계좌 입금을 받지 않아요</h1>'));
   if (isBlocked(shop, dUser.id)) return send(res, 403, page('이용 제한', `<h1>🚫 ${BLOCKED_MSG}</h1>`));
+  if (!(await licenseOk(shop))) return send(res, 403, page('이용 불가', `<h1>⛔ ${NO_LICENSE_MSG}</h1>`));
   if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const f = await readForm(req);
   const name = str(f.name, 20);
@@ -1591,6 +1639,7 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   const shopB = await store.shopById(item.shop);
   if (!shopB || shopB.deleted) return notFound(res, '아이템을 찾을 수 없어요');
   if (isBlocked(shopB, u.id)) return send(res, 403, page('이용 제한', `<h1>🚫 ${BLOCKED_MSG}</h1>`));
+  if (!(await licenseOk(shopB))) return send(res, 403, page('이용 불가', `<h1>⛔ ${NO_LICENSE_MSG}</h1>`));
   const f = await readForm(req);
   const multi = item.stock != null;
   let qty = multi ? parseInt(f.qty, 10) : 1;
@@ -1677,7 +1726,8 @@ route('GET', /^\/w\/([\w-]+)$/, async (req, res, m) => {
   if (!u) return redirect(res, '/login?next=' + enc('/w/' + shop.id));
   const q = new URL(req.url, BASE).searchParams;
   const blockedMe = isBlocked(shop, u.id);
-  const canCharge = !blockedMe && !!(shop.bank && shop.account && shop.holder);
+  const licOkW = await licenseOk(shop);
+  const canCharge = !blockedMe && licOkW && !!(shop.bank && shop.account && shop.holder);
   const bal = await store.shopPoints(u.id, shop.id);
   const pending = (await store.userShopCharges(u.id, shop.id)).filter((c) => Date.now() <= c.created + CHARGE_TTL);
   const log = await store.ledgerForUserShop(u.id, shop.id);
@@ -1691,7 +1741,7 @@ ${canCharge ? `<form class="card" method="post" action="/w/${shop.id}/charge">
 <input name="name" placeholder="입금자명 (은행 앱에 찍히는 내 이름)" required minlength="2" maxlength="20">
 <input type="hidden" name="image" id="cim"><div class="row" style="margin:0 0 10px"><label for="cif" style="display:inline-block;background:#f4f4f5;border-radius:12px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer">📷 입금 사진 (선택)</label><span id="cin" class="sub"></span></div><input type="file" id="cif" accept="image/*" style="display:none"><img id="cip" alt="" style="display:none;width:100%;max-height:200px;object-fit:contain;border-radius:12px;margin:0 0 10px">
 <script>(function(){var f=document.getElementById('cif'),v=document.getElementById('cim'),p=document.getElementById('cip'),n=document.getElementById('cin');f.onchange=function(){var file=f.files[0];if(!file)return;var r=new FileReader();r.onload=function(){var im=new Image();im.onload=function(){var s=Math.min(1,900/Math.max(im.width,im.height));var c=document.createElement('canvas');c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(im,0,0,c.width,c.height);var d=c.toDataURL('image/jpeg',0.7);v.value=d;p.src=d;p.style.display='block';n.textContent='사진 첨부됨'};im.onerror=function(){alert('이 사진은 읽을 수 없어요');f.value='';v.value=''};im.src=r.result};r.readAsDataURL(file)}})();</script>
-<button>충전 신청</button><p class="sub">신청 후 아래 계좌로 입금하면, 상점 운영자가 입금을 확인한 뒤 포인트가 들어와요. 충전한 포인트는 환불되지 않아요.</p></form>` : (blockedMe ? `<p class="warn">🚫 ${BLOCKED_MSG}</p>` : '<p class="warn">이 상점은 아직 충전을 받지 않아요</p>')}
+<button>충전 신청</button><p class="sub">신청 후 아래 계좌로 입금하면, 상점 운영자가 입금을 확인한 뒤 포인트가 들어와요. 충전한 포인트는 환불되지 않아요.</p></form>` : (blockedMe ? `<p class="warn">🚫 ${BLOCKED_MSG}</p>` : !licOkW ? '<p class="warn">⛔ 지금은 판매가 중단된 상점이라 충전할 수 없어요</p>' : '<p class="warn">이 상점은 아직 충전을 받지 않아요</p>')}
 ${pending.map((c) => `<div class="card"><b>입금해 주세요</b><br>${esc(shop.bank)} <b>${esc(shop.account)}</b> (예금주 ${esc(shop.holder)})<br><span class="price">${won(c.amount)}</span><br><span class="sub">입금자명 <b>${esc(c.name)}</b> 그대로 · 기한 ${fmtDate(c.created + CHARGE_TTL)}<br>운영자가 확인하면 포인트가 들어와요 (20초마다 자동 확인)</span>
 <form method="post" action="/w/${shop.id}/charge/${c.token}/cancel"><button style="background:#6b7280">신청 취소</button></form></div>`).join('')}
 ${pending.length ? '<script>setTimeout(function(){location.reload()},20000)</script>' : ''}
@@ -1707,6 +1757,7 @@ route('POST', /^\/w\/([\w-]+)\/charge$/, async (req, res, m) => {
   const f = await readForm(req);
   const back = (k, t) => redirect(res, `/w/${shop.id}?${k}=${enc(t)}`);
   if (isBlocked(shop, u.id)) return back('e', BLOCKED_MSG);
+  if (!(await licenseOk(shop))) return back('e', NO_LICENSE_MSG);
   if (!(shop.bank && shop.account && shop.holder)) return back('e', '이 상점은 아직 충전을 받지 않아요');
   const amount = parseInt(f.amount, 10);
   const name = str(f.name, 20);
@@ -1836,6 +1887,7 @@ route('GET', /^\/admin$/, async (req, res) => {
   const owners = sq ? await store.listUsers(sq) : [];
   const shops = sq ? await store.searchShops(sq, owners.map((o) => o.id)) : await store.allShops();
   const reqs = await store.listShopRequests();
+  const licenses = await store.listLicenses();
   const emailMap = new Map(users.map((x) => [x.id, x.email]));
   for (const o of owners) emailMap.set(o.id, o.email);
   if (sq) for (const sh of shops) if (sh.owner && !emailMap.has(sh.owner)) { const x = await store.userById(sh.owner); if (x) emailMap.set(x.id, x.email); }
@@ -1851,12 +1903,36 @@ ${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span 
 <form method="get" action="/admin"><input name="sq" placeholder="상점 이름 또는 주인 이메일 검색" value="${esc(sq)}"><input type="hidden" name="q" value="${esc(search)}"><button>검색</button>${sq ? '<p class="sub"><a href="/admin' + (search ? '?q=' + enc(search) : '') + '">검색 지우기</a></p>' : ''}</form>
 ${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b>${sh.deleted ? ' 🗑️ 삭제됨' : ''}<br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a>${sh.deleted ? '' : ` · <a href="/s/${sh.id}">보기</a>`}
 ${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form><form method="post" action="/admin/shops/${sh.id}/purge" onsubmit="return confirm('${esc(sh.name).replace(/&#39;/g, '')} 상점을 영구 삭제할까요?\\n아이템·주문·후기·충전·포인트 기록이 모두 지워지고, 구매자도 구매한 내용을 다시 볼 수 없어요. 절대 되돌릴 수 없어요.')"><button style="background:#7f1d1d;margin-top:6px">영구 삭제</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || `<p class="sub">${sq ? '검색 결과가 없어요' : '상점이 없어요'}</p>`}
+<h2>🔑 라이센스 키</h2>
+<form class="card" method="post" action="/admin/licenses"><div class="row"><input name="days" type="number" inputmode="numeric" min="1" max="36500" placeholder="기간 (일)" required><input name="count" type="number" inputmode="numeric" min="1" max="20" value="1" style="max-width:80px;text-align:center"></div><input name="note" placeholder="메모 (선택, 예: 홍길동)" maxlength="40" style="margin-top:8px"><button style="margin-top:8px">키 발급</button><p class="sub">기간은 일 단위로 마음대로 정해요. 오른쪽 칸은 발급 개수(최대 20). 영구는 36500일(100년)로 넣으세요.</p></form>
+${licenses.map((k) => `<div class="card tcard"><code style="font-size:14px;font-weight:700;user-select:all">${esc(k.key)}</code><br><span class="sub">${Number(k.days)}일${k.note ? ' · ' + esc(k.note) : ''} · ${k.used_by ? `사용됨 (회원번호 ${esc(String(k.used_by).slice(0, 8))} · ${fmtDay(k.used_at)})` : '미사용'}</span>${k.used_by ? '' : `<div class="acts"><button type="button" style="padding:10px;font-size:14px;border-radius:14px;background:#f4f4f5;color:#18181b" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(k.key)}');this.textContent='복사됨'">복사</button><form method="post" action="/admin/licenses/delete" onsubmit="return confirm('이 키를 삭제할까요?')"><input type="hidden" name="key" value="${esc(k.key)}"><button>삭제</button></form></div>`}</div>`).join('') || '<p class="sub">발급한 키가 없어요</p>'}
 <h2>👥 사용자</h2>
 <form method="get" action="/admin" class="row"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
-${users.map((x) => { const made = shops.filter((sh) => sh.owner === x.id && !sh.deleted).length; return `<div class="card ucard"><div class="em">${esc(x.email)}${x.banned ? ' 🚫' : ''}${isAdmin(x) ? ' 👑' : ''}</div><div class="sub">회원번호 ${esc(x.id.slice(0, 8))}${x.banned ? ' · 정지됨' : ''}</div>
+${users.map((x) => { const made = shops.filter((sh) => sh.owner === x.id && !sh.deleted).length; return `<div class="card ucard"><div class="em">${esc(x.email)}${x.banned ? ' 🚫' : ''}${isAdmin(x) ? ' 👑' : ''}</div><div class="sub">회원번호 ${esc(x.id.slice(0, 8))}${x.banned ? ' · 정지됨' : ''}${Number(x.license_until) > Date.now() ? ' · 🔑 ' + fmtDay(x.license_until) + '까지' : ''}</div>
 ${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" class="row" style="margin-top:10px"><span class="sub" style="white-space:nowrap">🏪 한도 (${made}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required style="max-width:80px;padding:11px;text-align:center"><button>저장</button></form>
 <div class="acts"><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form></div>
 <details><summary>⚠️ 더 보기 (탈퇴)</summary><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d">회원 탈퇴시키기</button></form></details>`}</div>`; }).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+});
+
+route('POST', /^\/admin\/licenses$/, async (req, res) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const f = await readForm(req);
+  const days = parseInt(f.days, 10);
+  const count = Math.max(1, Math.min(20, parseInt(f.count, 10) || 1));
+  if (!(days >= 1 && days <= 36500)) return redirect(res, `/admin?e=${enc('기간은 1~36500일 사이로 넣어주세요')}`);
+  const note = str(f.note, 40);
+  const made = [];
+  for (let i = 0; i < count; i++) { const key = newLicenseKey(); await store.createLicense({ key, days, created: Date.now(), note }); made.push(key); }
+  redirect(res, `/admin?m=${enc(`${days}일 키 ${count}개 발급: ${made.join(' / ')}`)}`);
+});
+
+route('POST', /^\/admin\/licenses\/delete$/, async (req, res) => {
+  const me = await adminOnly(req, res);
+  if (!me) return;
+  const f = await readForm(req);
+  await store.deleteUnusedLicense(str(f.key, 40));
+  redirect(res, `/admin?m=${enc('키를 삭제했어요')}`);
 });
 
 route('POST', /^\/admin\/shops\/([\w-]+)\/(delete|restore)$/, async (req, res, m) => {
@@ -2067,6 +2143,7 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   const canMod = !!me && (me.id === shop.owner || isAdmin(me));
   const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
   const blockedMe = isBlocked(shop, me && me.id);
+  const licOk = await licenseOk(shop);
   const disc = blockedMe ? 0 : await discountOf(me && me.id, shop.id);
   const left = item.stock != null ? stockLines(item.stock).length : null;
   const stockTxt = left == null ? '무제한' : left ? `${left}개` : '품절';
@@ -2075,7 +2152,7 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
 <div class="rt">${ICO.star}<span>${reviews.length ? avg.toFixed(1) : '-'}</span>${reviews.length ? `<span class="sm">(${reviews.length})</span>` : ''}<span class="sm" style="margin-left:auto">판매 ${sold}건</span></div>
 <div class="pr">${disc ? `<span><s class="sm">${won(item.price)}</s> <b>${won(discPrice(item.price, disc))}</b> <span class="sm">(${disc}% 할인)</span></span>` : `<b>${won(item.price)}</b>`}<span>재고: <b>${stockTxt}</b></span></div></div></div>
 ${item.preview ? `<div class="bx" style="white-space:pre-wrap">${esc(item.preview)}</div>` : ''}
-${left === 0 ? '<div class="nt">😢 품절이에요</div>' : blockedMe ? `<div class="nt">🚫 ${BLOCKED_MSG}</div>` : pointsBlock(item, me, bal, shop, disc)}
+${left === 0 ? '<div class="nt">😢 품절이에요</div>' : !licOk ? '<div class="nt">⛔ 지금은 판매가 중단된 상점이에요</div>' : blockedMe ? `<div class="nt">🚫 ${BLOCKED_MSG}</div>` : pointsBlock(item, me, bal, shop, disc)}
 <h3 style="font-size:20px;margin:30px 0 10px">⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h3>
 ${reviews.map((r) => `<div class="bx">${stars(r.rating)} <span class="sm">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button class="bb" style="background:#dc2626;margin-top:10px;padding:12px;font-size:15px">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sm">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`;
   const navItems = (await store.itemsByShop(shop.id)).filter((i) => i.pub);
