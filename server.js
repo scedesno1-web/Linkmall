@@ -401,6 +401,21 @@ const LINKBTN = `
 .w a:not([class]),.w a.sub,.w a.sm,.main a:not([class]),.main a.sub,.main a.sm{display:inline-block;background:#f4f4f5;color:#18181b;border-radius:14px;padding:10px 14px;margin:3px 0;font-size:14px;font-weight:700;text-decoration:none;word-break:break-all;line-height:1.4}
 .w a:not([class]):active,.w a.sub:active,.w a.sm:active,.main a:not([class]):active,.main a.sub:active,.main a.sm:active{background:#e4e4e7}
 `;
+// ---------- 다크모드 ----------
+// 화면 전체 색을 뒤집고(검은 배경·밝은 글자), 사진·동영상만 다시 뒤집어 원래 색으로 보여줘요.
+// 처음엔 기기 설정을 따르고, 🌙/☀️ 버튼으로 바꾸면 그 선택을 기억해요.
+const DARK_CSS = `
+html.dark{filter:invert(1) hue-rotate(180deg);background:#fff}
+html.dark img,html.dark video,html.dark canvas{filter:invert(1) hue-rotate(180deg)}
+html.dark .ov{background:rgba(255,255,255,.5)}
+html.dark .dr{background:#f0f0f0}
+html.dark .card,html.dark .bx,html.dark .pc{background:#ededed;border-color:#dcdcdc}
+html.dark input,html.dark textarea,html.dark select{background:#f2f2f2;border-color:#d4d4d8}
+.tgl{width:38px;height:38px;flex:none;border:0;border-radius:50%;background:#f4f4f5;padding:0;display:grid;place-items:center;font-size:17px;line-height:1;cursor:pointer;color:inherit}
+.tgl .sn{display:none}html.dark .tgl .sn{display:inline}html.dark .tgl .mn{display:none}
+`;
+const DARK_HEAD = `<script>try{var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}</script>`;
+const DARK_BTN = `<button class="tgl" type="button" aria-label="다크모드" onclick="var d=document.documentElement.classList.toggle('dark');try{localStorage.setItem('theme',d?'dark':'light')}catch(e){}"><span class="mn">🌙</span><span class="sn">☀️</span></button>`;
 const css = `
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;background:#fff;color:#18181b}
@@ -425,8 +440,9 @@ button,.btn{display:inline-block;background:#18181b;color:#fff;border:0;border-r
 .secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:16px;padding:14px}code{background:#f4f4f5;padding:2px 6px;border-radius:8px;word-break:break-all}
 a{color:#18181b}.btn,.logo,.chip{text-decoration:none}.warn{background:#fff7ed;color:#9a3412;border-radius:16px;padding:13px 16px;font-size:13px}
 ${LINKBTN}
+${DARK_CSS}
 `;
-const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${css}</style></head><body>${SPLASH}<div class="top"><a class="logo" href="/">🔗 링크몰</a><a class="chip" href="/my">내 상점</a></div><div class="w">${body}</div><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
+const page = (title, body) => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111">${DARK_HEAD}<meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${css}</style></head><body>${SPLASH}<div class="top"><a class="logo" href="/">🔗 링크몰</a>${DARK_BTN}<a class="chip" href="/my">내 상점</a></div><div class="w">${body}</div><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
 
 // ---------- 상점 화면 테마 (모바일 앱 느낌: 상단바 + 왼쪽 메뉴 + 큰 카드) ----------
 const shopCss = `
@@ -475,6 +491,7 @@ body.open .ov{opacity:1;pointer-events:auto}body.open .dr{transform:none}
 input,textarea,select{font-family:inherit}
 .secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:16px;padding:14px}
 ${LINKBTN}
+${DARK_CSS}
 `;
 const ICO = {
   bag: '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8.5 10.5a3.5 3.5 0 0 0 7 0"/><path d="M4 7h16"/></svg>',
@@ -507,8 +524,8 @@ const navGroups = (shop, pubItems) => {
   if (rest.length) g.push({ name: '그 외', items: rest });
   return g;
 };
-const shopPage = (shop, title, body, me, bal, next, active = 'home', groups = [], curId = '') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${shopCss}</style></head><body>${SPLASH}
-<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><a class="tb" href="/s/${shop.id}">${esc(shop.name)}</a>${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
+const shopPage = (shop, title, body, me, bal, next, active = 'home', groups = [], curId = '') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111">${DARK_HEAD}<meta name="mobile-web-app-capable" content="yes"><title>${esc(title)}</title><style>${shopCss}</style></head><body>${SPLASH}
+<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><a class="tb" href="/s/${shop.id}">${esc(shop.name)}</a>${DARK_BTN}${me ? `<a class="chip" href="/w/${shop.id}">💰 ${pts(bal)}</a>` : `<a class="chip" href="/login?next=${enc(next)}">로그인</a>`}</div>
 <div class="ov" onclick="document.body.classList.remove('open')"></div>
 <nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(shop.name)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
 <a class="nv${active === 'stats' ? ' on' : ''}" href="/s/${shop.id}/stats">${ICO.chart}통계</a>
@@ -551,8 +568,8 @@ const panelPage = (o, html) => {
   const nav = tabs.map((t) => `<a class="nv" href="#${t.id}" data-t="${t.id}"><i>${t.icon}</i>${esc(t.label)}</a>`).join('');
   const links = (o.links || []).map((l) => `<a class="nv" href="${l.href}">${l.label}</a>`).join('');
   const chip = o.chip ? `<a class="chip" href="${o.chip.href}">${o.chip.label}</a>` : '';
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111"><meta name="mobile-web-app-capable" content="yes"><title>${esc(o.title)}</title><style>${css}${PANEL_CSS}</style></head><body>${SPLASH}
-<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><span class="logo">${esc(o.heading || o.title)}</span>${chip}</div>
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="/favicon.ico?v=${ICON_VER}"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=${ICON_VER}"><link rel="manifest" href="/manifest.json?v=${ICON_VER}"><meta name="theme-color" content="#111111">${DARK_HEAD}<meta name="mobile-web-app-capable" content="yes"><title>${esc(o.title)}</title><style>${css}${PANEL_CSS}</style></head><body>${SPLASH}
+<div class="top"><button class="ib" type="button" onclick="document.body.classList.add('open')" aria-label="메뉴">${ICO.menu}</button><span class="logo">${esc(o.heading || o.title)}</span>${DARK_BTN}${chip}</div>
 <div class="ov" onclick="document.body.classList.remove('open')"></div>
 <nav class="dr"><div class="brand"><img src="/apple-touch-icon.png?v=${ICON_VER}" alt=""><b>${esc(o.heading || o.title)}</b><button class="ib" type="button" style="background:none" onclick="document.body.classList.remove('open')" aria-label="닫기">${ICO.x}</button></div>
 ${nav}${links ? '<hr>' + links : ''}</nav>
