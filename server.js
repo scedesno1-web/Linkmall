@@ -366,6 +366,12 @@ input,textarea,select{width:100%;padding:14px;border:1px solid #e4e4e7;border-ra
 input:focus,textarea:focus,select:focus{outline:2px solid #18181b;border-color:#18181b}
 textarea{min-height:90px}
 button,.btn{display:inline-block;background:#18181b;color:#fff;border:0;border-radius:18px;padding:15px 16px;font-size:16px;font-weight:700;text-decoration:none;cursor:pointer;width:100%;text-align:center;font-family:inherit}
+.row{display:flex;gap:8px;align-items:center}.row input{margin:0;flex:1;min-width:0}.row button{width:auto;flex:none;padding:13px 18px;font-size:15px;border-radius:14px}
+.tcard{padding:14px 16px;border-radius:18px}.th{display:flex;align-items:center;gap:8px;margin-bottom:10px}.th form{margin:0 0 0 auto}.th form button{width:auto;padding:7px 12px;font-size:13px;background:#f4f4f5;color:#dc2626;border-radius:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.chip2{display:inline-flex;align-items:center;gap:6px;background:#f4f4f5;border-radius:999px;padding:4px 4px 4px 12px;margin:0;font-size:13px;color:#52525b}.chip2 button{width:26px;height:26px;padding:0;border-radius:50%;background:#d4d4d8;color:#18181b;font-size:12px}
+.ucard{padding:14px 16px;margin:8px 0;border-radius:18px}.ucard .em{font-size:15px;font-weight:700;word-break:break-all}
+.ucard details{margin-top:10px}.ucard summary{cursor:pointer;font-size:14px;font-weight:700;color:#52525b;padding:8px 0;list-style:none}.ucard summary::-webkit-details-marker{display:none}
+.ucard .acts{display:flex;gap:8px;margin-top:8px}.ucard .acts form{flex:1;margin:0}.ucard .acts button{padding:11px 8px;font-size:14px;border-radius:14px}
 .sub{color:#71717a;font-size:13px}.price{font-weight:700;color:#18181b}.lock{background:#f4f4f5;border-radius:16px;padding:14px;color:#18181b;font-size:14px}
 .secret{white-space:pre-wrap;word-break:break-all;background:#ecfdf5;border-radius:16px;padding:14px}code{background:#f4f4f5;padding:2px 6px;border-radius:8px;word-break:break-all}
 a{color:#18181b}.btn,.logo,.chip{text-decoration:none}.warn{background:#fff7ed;color:#9a3412;border-radius:16px;padding:13px 16px;font-size:13px}
@@ -1320,6 +1326,7 @@ ${Object.keys(NOTI).map((k) => `<label style="display:block;margin-top:12px"><b>
     : `<p class="sub">웹훅을 ${MAX_HOOKS}개 다 등록했어요. 새로 추가하려면 하나를 삭제하세요.</p>`;
   send(res, 200, page(shop.name, `
 <h1>${esc(shop.name)} 관리</h1>
+<form class="card" method="post" action="/m/${shop.key}/rename"><b>✏️ 상점 이름</b><div class="row" style="margin-top:8px"><input name="name" value="${esc(shop.name)}" required maxlength="40"><button>변경</button></div></form>
 <div class="card"><b>내 상점 링크 (공유하세요)</b><br><code>${BASE}/s/${shop.id}</code><br><a href="/s/${shop.id}">열어보기</a></div>
 <div class="card"><b>🔔 디스코드 알림</b> <span class="sub">(${hooks.length}/${MAX_HOOKS}개)</span><p class="sub">새 주문·입금·후기 알림을 받을 디스코드 웹훅 주소예요. 최대 ${MAX_HOOKS}개까지 등록할 수 있고, 웹훅마다 받을 알림 종류를 따로 고를 수 있어요.</p>
 ${hookCards}${hookAdd}
@@ -1334,16 +1341,14 @@ ${items.filter((i) => i.pub).map((i) => `<label style="display:block;padding:5px
 ${c.basic ? '<p class="sub" style="margin:8px 0 0">기본 카테고리예요. 이름을 바꾸거나 체크를 풀고 저장하면 내 카테고리로 바뀌어요.</p>' : `<form method="post" action="/m/${shop.key}/cats/${c.id}/delete" onsubmit="return confirm('이 카테고리를 삭제할까요? (상품은 지워지지 않아요)')"><button style="margin-top:6px;background:#dc2626">카테고리 삭제</button></form>`}</div>`).join('')}
 <form class="card" method="post" action="/m/${shop.key}/cats"><input name="name" placeholder="새 카테고리 이름 (예: 음식)" required maxlength="20"><button>카테고리 만들기</button></form>
 <h2>🏷️ 칭호</h2>
-<form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>칭호 만들기</button></form>
-${titles.map((t) => `<div class="card">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span>
-<form method="post" action="/m/${shop.key}/titles/${t.id}/grant"><input name="code" placeholder="회원번호 8자리 (구매자 지갑에 표시)" required minlength="8" maxlength="12"><button>칭호 주기</button></form>
-${(holders[t.id] || []).map((h) => `<form method="post" action="/m/${shop.key}/titles/${t.id}/revoke" style="display:inline"><input type="hidden" name="uid" value="${esc(h.user_id)}"><span class="sub">${esc(h.user_id.slice(0, 8))}</span> <button style="width:auto;padding:4px 10px;background:#6b7280">회수</button></form> `).join('')}
-<form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button style="background:#dc2626">칭호 삭제</button></form></div>`).join('') || '<p class="sub">아직 칭호가 없어요</p>'}
+<form class="card row" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><button>만들기</button></form>
+${titles.map((t) => `<div class="card tcard"><div class="th">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span><form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button>삭제</button></form></div>
+<form method="post" action="/m/${shop.key}/titles/${t.id}/grant" class="row"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><button>주기</button></form>
+${(holders[t.id] || []).length ? `<div class="chips">${(holders[t.id] || []).map((h) => `<form method="post" action="/m/${shop.key}/titles/${t.id}/revoke" class="chip2" onsubmit="return confirm('이 회원의 칭호를 회수할까요?')"><input type="hidden" name="uid" value="${esc(h.user_id)}"><span>${esc(h.user_id.slice(0, 8))}</span><button title="회수">✕</button></form>`).join('')}</div>` : ''}</div>`).join('') || '<p class="sub">아직 칭호가 없어요</p>'}
 <h2>🏦 충전 받을 계좌</h2>
 <form class="card" method="post" action="/m/${shop.key}/pay">
-<input name="bank" placeholder="은행 (예: 카카오뱅크)" value="${esc(shop.bank)}" maxlength="20">
-<input name="account" placeholder="계좌번호" value="${esc(shop.account)}" maxlength="40">
-<input name="holder" placeholder="예금주" value="${esc(shop.holder)}" maxlength="20">
+<div class="row"><input name="bank" placeholder="은행" value="${esc(shop.bank)}" maxlength="20"><input name="holder" placeholder="예금주" value="${esc(shop.holder)}" maxlength="20"></div>
+<input name="account" placeholder="계좌번호" value="${esc(shop.account)}" maxlength="40" inputmode="numeric" style="margin-top:8px">
 <button>저장</button><p class="sub">구매자가 이 상점 포인트를 충전할 때 이 계좌가 보여요. 은행·계좌번호·예금주를 모두 적어야 충전이 열리고, 비우면 꺼져요. 입금은 직접 확인해서 승인해요.</p></form>
 <h2>⏳ 충전 대기 ${charges.length}건</h2>
 ${charges.map((c) => `<div class="card"><b>${esc(c.name)}</b> <span class="price">${won(c.amount)}</span><br><span class="sub">회원 ${esc(c.user_id.slice(0, 8))} · ${fmtDate(c.created)}${Date.now() > c.created + CHARGE_TTL ? ' · 기한 지남' : ''}</span>
@@ -1449,6 +1454,16 @@ route('POST', /^\/m\/([\w-]+)\/claim$/, async (req, res, m) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=' + enc('/m/' + shop.key));
   if (!shop.owner) await store.updateShop(shop.id, { owner: u.id });
+  redirect(res, `/m/${shop.key}`);
+});
+
+route('POST', /^\/m\/([\w-]+)\/rename$/, async (req, res, m) => {
+  const shop = await manageShop(req, res, m[1]);
+  if (!shop) return;
+  const f = await readForm(req);
+  const name = str(f.name, 40);
+  if (!name) return send(res, 400, page('오류', `<h1>상점 이름을 적어주세요</h1><p><a href="/m/${shop.key}">돌아가기</a></p>`));
+  await store.updateShop(shop.id, { name });
   redirect(res, `/m/${shop.key}`);
 });
 
@@ -1746,9 +1761,11 @@ ${reqs.map((r) => `<div class="card"><b>${esc(emailOf(r.user_id))}</b><br><span 
 ${shops.map((sh) => `<div class="card"><b>${esc(sh.name)}</b>${sh.deleted ? ' 🗑️ 삭제됨' : ''}<br><span class="sub">주인 ${esc(emailOf(sh.owner))}</span><br><a href="/m/${sh.key}">관리하기</a>${sh.deleted ? '' : ` · <a href="/s/${sh.id}">보기</a>`}
 ${sh.deleted ? `<form method="post" action="/admin/shops/${sh.id}/restore"><button style="background:#0f766e">복구</button></form><form method="post" action="/admin/shops/${sh.id}/purge" onsubmit="return confirm('${esc(sh.name).replace(/&#39;/g, '')} 상점을 영구 삭제할까요?\\n아이템·주문·후기·충전·포인트 기록이 모두 지워지고, 구매자도 구매한 내용을 다시 볼 수 없어요. 절대 되돌릴 수 없어요.')"><button style="background:#7f1d1d;margin-top:6px">영구 삭제</button></form>` : `<form method="post" action="/admin/shops/${sh.id}/delete" onsubmit="return confirm('이 상점을 삭제할까요? 사이트에서 사라지고 새 구매·충전이 막혀요. (복구할 수 있어요)')"><button style="background:#dc2626">상점 삭제</button></form>`}</div>`).join('') || `<p class="sub">${sq ? '검색 결과가 없어요' : '상점이 없어요'}</p>`}
 <h2>👥 사용자</h2>
-<form method="get" action="/admin"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
-${users.map((x) => `<div class="card"><b>${esc(x.email)}</b>${x.banned ? ' 🚫 정지' : ''}${isAdmin(x) ? ' 👑' : ''}<br><span class="sub">회원번호 ${esc(x.id.slice(0, 8))}</span>
-${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" style="margin-top:8px"><span class="sub">🏪 상점 한도 (현재 ${shops.filter((sh) => sh.owner === x.id && !sh.deleted).length}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required><button>한도 저장</button></form><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d;margin-top:6px">회원 탈퇴시키기</button></form>`}</div>`).join('') || '<p class="sub">사용자가 없어요</p>'}`));
+<form method="get" action="/admin" class="row"><input type="hidden" name="sq" value="${esc(sq)}"><input name="q" placeholder="이메일 검색" value="${esc(search)}"><button>검색</button></form>
+${users.map((x) => { const made = shops.filter((sh) => sh.owner === x.id && !sh.deleted).length; return `<div class="card ucard"><div class="em">${esc(x.email)}${x.banned ? ' 🚫' : ''}${isAdmin(x) ? ' 👑' : ''}</div><div class="sub">회원번호 ${esc(x.id.slice(0, 8))}${x.banned ? ' · 정지됨' : ''}</div>
+${isAdmin(x) ? '' : `<form method="post" action="/admin/users/${x.id}/limit" class="row" style="margin-top:10px"><span class="sub" style="white-space:nowrap">🏪 한도 (${made}개 만듦)</span><input name="n" type="number" min="0" max="100" value="${shopLimit(x)}" required style="max-width:80px;padding:11px;text-align:center"><button>저장</button></form>
+<div class="acts"><form method="post" action="/admin/users/${x.id}/ban"><input type="hidden" name="v" value="${x.banned ? 0 : 1}"><button style="background:${x.banned ? '#0f766e' : '#dc2626'}">${x.banned ? '정지 해제' : '계정 정지'}</button></form></div>
+<details><summary>⚠️ 더 보기 (탈퇴)</summary><form method="post" action="/admin/users/${x.id}/delete" onsubmit="return confirm('${esc(x.email)} 회원을 탈퇴시킬까요?\\n포인트·칭호가 지워지고, 이 회원의 상점은 삭제 처리돼요. 되돌릴 수 없어요.')"><button style="background:#7f1d1d">회원 탈퇴시키기</button></form></details>`}</div>`; }).join('') || '<p class="sub">사용자가 없어요</p>'}}`));
 });
 
 route('POST', /^\/admin\/shops\/([\w-]+)\/(delete|restore)$/, async (req, res, m) => {
