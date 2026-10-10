@@ -1222,6 +1222,14 @@ route('GET', /^\/default-product\.jpg$/, (req, res) => {
 });
 const notFound = (res, msg) => send(res, 404, page('없음', `<h1>${msg}</h1>`));
 
+// 소개 페이지: 같은 폴더의 linkmall.html 파일을 /intro 주소로 보여줘요
+route('GET', /^\/intro$/, (req, res) => {
+  let html;
+  try { html = fs.readFileSync(path.join(__dirname, 'linkmall.html'), 'utf8'); }
+  catch { return notFound(res, '소개 페이지 파일(linkmall.html)이 없어요'); }
+  send(res, 200, html, { 'Cache-Control': 'public, max-age=300' });
+});
+
 route('GET', /^\/$/, async (req, res) => {
   const u = await currentUser(req);
   send(res, 200, page('링크몰', `
@@ -2683,7 +2691,7 @@ route('POST', /^\/inquiries\/([\w-]+)\/delete$/, async (req, res, m) => {
 
 // 로그인 없이 열어둘 곳: 첫 화면, 로그인·가입, 외부 서버가 부르는 웹훅(결제·문자)
 const PUBLIC = [
-  ['GET', /^\/$/], ['GET', /^\/(favicon\.ico|apple-touch-icon\.png)$/], ['GET', /^\/(manifest\.json|sw\.js|badge\.png|icon-(192|512)\.png)$/], ['GET', /^\/login$/], ['POST', /^\/login$/],
+  ['GET', /^\/$/], ['GET', /^\/intro$/], ['GET', /^\/(favicon\.ico|apple-touch-icon\.png)$/], ['GET', /^\/(manifest\.json|sw\.js|badge\.png|icon-(192|512)\.png)$/], ['GET', /^\/login$/], ['POST', /^\/login$/],
   ['POST', /^\/signup(\/start|\/verify)?$/], ['POST', /^\/logout$/],
   ['POST', /^\/pay\/webhook$/], ['POST', /^\/sms\/[\w-]+$/],
 ];
