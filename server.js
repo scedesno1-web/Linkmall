@@ -1039,7 +1039,7 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', () => {}); // 캐시 없이 네트워크 그대로 (로그인·재고가 항상 최신)
 self.addEventListener('push', (e) => {
   let d = {}; try { d = e.data ? e.data.json() : {}; } catch (x) {}
-  e.waitUntil(self.registration.showNotification(d.title || '링크몰', { body: d.body || '', icon: '/icon-192.png', badge: '/icon-192.png', data: { url: d.url || '/my' } }));
+  e.waitUntil(self.registration.showNotification(d.title || '링크몰', { body: d.body || '', icon: '/icon-192.png', badge: '/badge.png?v=${ICON_VER}', data: { url: d.url || '/my' } }));
 });
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
@@ -1084,6 +1084,12 @@ route('GET', /^\/manifest\.json$/, (req, res) => {
 route('GET', /^\/sw\.js$/, (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' });
   res.end(SW_JS);
+});
+// 알림 작은 아이콘(상단바): 안드로이드는 '투명 배경 + 한 가지 색' 이미지만 제대로 그려요. 불투명 아이콘을 쓰면 흰 네모로 보여요.
+const ICON_BADGE = Buffer.from('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', 'base64');
+route('GET', /^\/badge\.png$/, (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
+  res.end(ICON_BADGE);
 });
 route('GET', /^\/icon-(192|512)\.png$/, (req, res, m) => {
   res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
@@ -2328,7 +2334,7 @@ route('POST', /^\/i\/([\w-]+)\/reviews\/([\w-]+)\/delete$/, async (req, res, m) 
 
 // 로그인 없이 열어둘 곳: 첫 화면, 로그인·가입, 외부 서버가 부르는 웹훅(결제·문자)
 const PUBLIC = [
-  ['GET', /^\/$/], ['GET', /^\/(favicon\.ico|apple-touch-icon\.png)$/], ['GET', /^\/(manifest\.json|sw\.js|icon-(192|512)\.png)$/], ['GET', /^\/login$/], ['POST', /^\/login$/],
+  ['GET', /^\/$/], ['GET', /^\/(favicon\.ico|apple-touch-icon\.png)$/], ['GET', /^\/(manifest\.json|sw\.js|badge\.png|icon-(192|512)\.png)$/], ['GET', /^\/login$/], ['POST', /^\/login$/],
   ['POST', /^\/signup(\/start|\/verify)?$/], ['POST', /^\/logout$/],
   ['POST', /^\/pay\/webhook$/], ['POST', /^\/sms\/[\w-]+$/],
 ];
