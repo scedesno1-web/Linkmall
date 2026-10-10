@@ -544,7 +544,19 @@ document.getElementById('payVbank').onclick = () => pay('VIRTUAL_ACCOUNT');
   return out;
 };
 
-const send = (res, code, html, headers = {}) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', ...headers }); res.end(html); };
+const zlib = require('zlib');
+const send = (res, code, html, headers = {}) => {
+  const h = { 'Content-Type': 'text/html; charset=utf-8', ...headers };
+  const ae = String((res.req && res.req.headers['accept-encoding']) || '');
+  if (typeof html === 'string' && /\bgzip\b/.test(ae) && html.length > 1024) { // 큰 페이지는 압축해서 보내 전송을 빠르게
+    return zlib.gzip(html, { level: 5 }, (err, buf) => {
+      if (err) { res.writeHead(code, h); return res.end(html); }
+      res.writeHead(code, { ...h, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', 'Content-Length': buf.length });
+      res.end(buf);
+    });
+  }
+  res.writeHead(code, h); res.end(html);
+};
 const redirect = (res, to, headers = {}) => { res.writeHead(303, { Location: to, ...headers }); res.end(); };
 const readForm = (req) => new Promise((resolve) => {
   let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
