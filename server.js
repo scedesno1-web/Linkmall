@@ -838,6 +838,7 @@ const parseBlocked = (shop) => { try { const a = JSON.parse((shop && shop.blocke
 const isBlocked = (shop, uid) => !!uid && parseBlocked(shop).includes(uid);
 const BLOCKED_MSG = '이 상점에서 이용이 제한됐어요';
 const discountOf = async (uid, shopId) => { if (!uid) return 0; try { const ts = await store.userTitles(uid); return Math.max(0, ...ts.filter((t) => t.shop === shopId).map((t) => Math.min(20, Number(t.discount) || 0))); } catch { return 0; } };
+const paybackOf = async (uid, shopId) => { if (!uid) return 0; try { const ts = await store.userTitles(uid); return Math.max(0, ...ts.filter((t) => t.shop === shopId).map((t) => Math.min(20, Number(t.payback) || 0))); } catch { return 0; } };
 const discPrice = (price, disc) => Math.floor(Number(price) * (100 - disc) / 100);
 async function manageShop(req, res, key) {
   const shop = await store.shopByKey(key);
@@ -1352,9 +1353,10 @@ ${items.filter((i) => i.pub).map((i) => `<label style="display:block;padding:5px
 ${c.basic ? '<p class="sub" style="margin:8px 0 0">기본 카테고리예요. 이름을 바꾸거나 체크를 풀고 저장하면 내 카테고리로 바뀌어요.</p>' : `<form method="post" action="/m/${shop.key}/cats/${c.id}/delete" onsubmit="return confirm('이 카테고리를 삭제할까요? (상품은 지워지지 않아요)')"><button style="margin-top:6px;background:#dc2626">카테고리 삭제</button></form>`}</div>`).join('')}
 <form class="card" method="post" action="/m/${shop.key}/cats"><input name="name" placeholder="새 카테고리 이름 (예: 음식)" required maxlength="20"><button>카테고리 만들기</button></form>
 <h2>🏷️ 칭호</h2>
-<form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><input name="discount" type="number" inputmode="numeric" min="0" max="20" placeholder="할인율 % (0~20, 선택)"><div class="row"><input name="auto_min" type="number" inputmode="numeric" min="0" step="1000" placeholder="누적 구매 N원 이상 자동 지급 (선택)"><button>만들기</button></div></form>
-${titles.map((t) => `<div class="card tcard"><div class="th">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span>${Number(t.discount) > 0 ? `<span class="sub" style="color:#0f766e;font-weight:700">· 할인 ${Number(t.discount)}%</span>` : ''}${Number(t.auto_min) > 0 ? `<span class="sub" style="font-weight:700">· ${Number(t.auto_min).toLocaleString('ko-KR')}원↑ 자동</span>` : ''}<form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button>삭제</button></form></div>
+<form class="card" method="post" action="/m/${shop.key}/titles"><input name="name" placeholder="새 칭호 이름 (예: VIP)" required maxlength="20"><div class="row" style="margin-bottom:8px"><input name="discount" type="number" inputmode="numeric" min="0" max="20" placeholder="할인 % (0~20)"><input name="payback" type="number" inputmode="numeric" min="0" max="20" placeholder="페이백 % (0~20)"></div><div class="row"><input name="auto_min" type="number" inputmode="numeric" min="0" step="1000" placeholder="누적 구매 N원 이상 자동 지급 (선택)"><button>만들기</button></div></form>
+${titles.map((t) => `<div class="card tcard"><div class="th">${badgeHtml(t.name)} <span class="sub">${(holders[t.id] || []).length}명 보유</span>${Number(t.discount) > 0 ? `<span class="sub" style="color:#0f766e;font-weight:700">· 할인 ${Number(t.discount)}%</span>` : ''}${Number(t.payback) > 0 ? `<span class="sub" style="color:#b45309;font-weight:700">· 페이백 ${Number(t.payback)}%</span>` : ''}${Number(t.auto_min) > 0 ? `<span class="sub" style="font-weight:700">· ${Number(t.auto_min).toLocaleString('ko-KR')}원↑ 자동</span>` : ''}<form method="post" action="/m/${shop.key}/titles/${t.id}/delete" onsubmit="return confirm('칭호를 삭제하면 받은 사람에게서도 사라져요. 삭제할까요?')"><button>삭제</button></form></div>
 <form method="post" action="/m/${shop.key}/titles/${t.id}/auto" style="margin-bottom:8px"><span class="sub">누적 구매 금액이 이 이상이면 자동 지급 (0=끔)</span><div class="row" style="margin-top:4px"><input name="auto_min" type="number" inputmode="numeric" min="0" step="1000" value="${Number(t.auto_min) || 0}"><span class="sub">원</span><button>저장</button></div></form>
+<form method="post" action="/m/${shop.key}/titles/${t.id}/payback" class="row" style="margin-bottom:8px"><input name="payback" type="number" inputmode="numeric" min="0" max="20" value="${Number(t.payback) || 0}" style="max-width:80px;text-align:center"><span class="sub" style="white-space:nowrap">% 페이백 (0~20)</span><button>저장</button></form>
 <form method="post" action="/m/${shop.key}/titles/${t.id}/discount" class="row" style="margin-bottom:8px"><input name="discount" type="number" inputmode="numeric" min="0" max="20" value="${Number(t.discount) || 0}" style="max-width:80px;text-align:center"><span class="sub" style="white-space:nowrap">% 할인 (0~20)</span><button>저장</button></form>
 <form method="post" action="/m/${shop.key}/titles/${t.id}/grant" class="row"><input name="code" placeholder="회원번호 8자리" required minlength="8" maxlength="12"><button>주기</button></form>
 ${(holders[t.id] || []).length ? `<div class="chips">${(holders[t.id] || []).map((h) => `<form method="post" action="/m/${shop.key}/titles/${t.id}/revoke" class="chip2" onsubmit="return confirm('이 회원의 칭호를 회수할까요?')"><input type="hidden" name="uid" value="${esc(h.user_id)}"><span>${esc(h.user_id.slice(0, 8))}</span><button title="회수">✕</button></form>`).join('')}</div>` : ''}</div>`).join('') || '<p class="sub">아직 칭호가 없어요</p>'}
@@ -1620,6 +1622,14 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   try { await store.createOrder(order); }
   catch (e) { await store.addShopPoints(u.id, item.shop, total); if (lines) await restoreLines(item.id, lines); throw e; }
   try { await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: -total, kind: 'buy', ref: order.token, note: qty > 1 ? `${item.title} × ${qty}` : item.title, created: Date.now() }); } catch (e) { console.error('ledger', e.message); }
+  try { // 칭호 페이백: 결제한 금액의 N%를 이 상점 포인트로 돌려줘요
+    const pb = await paybackOf(u.id, item.shop);
+    const back = Math.floor(total * pb / 100);
+    if (pb > 0 && back > 0) {
+      await store.addShopPoints(u.id, item.shop, back);
+      await store.addLedger({ id: rid(9), user_id: u.id, shop: item.shop, delta: back, kind: 'payback', ref: order.token, note: `칭호 페이백 ${pb}%`, created: Date.now() });
+    }
+  } catch (e) { console.error('페이백 실패', e.message); }
   if (item.title_id) { const t = await store.titleById(item.title_id); if (t) await store.grantTitle(u.id, t.id, item.shop); }
   try { // 이 상점에서 누적 구매 금액이 기준 이상이면 칭호 자동 지급
     const autoTitles = (await store.titlesByShop(item.shop)).filter((t) => Number(t.auto_min) > 0);
@@ -1647,7 +1657,8 @@ route('GET', /^\/wallet$/, async (req, res) => {
     const sh = await store.shopById(sid);
     if (!sh || sh.deleted) continue;
     const dMax = Math.max(0, ...list.map((t) => Math.min(20, Number(t.discount) || 0)));
-    titleRows.push(`<a class="ca" href="/s/${sh.id}"><div class="card"><b>${esc(sh.name)}</b>${dMax ? ` <span class="sub" style="color:#0f766e;font-weight:700">· ${dMax}% 할인</span>` : ''}<br>${list.map((t) => badgeHtml(t.name)).join('')}</div></a>`);
+    const pMax = Math.max(0, ...list.map((t) => Math.min(20, Number(t.payback) || 0)));
+    titleRows.push(`<a class="ca" href="/s/${sh.id}"><div class="card"><b>${esc(sh.name)}</b>${dMax ? ` <span class="sub" style="color:#0f766e;font-weight:700">· ${dMax}% 할인</span>` : ''}${pMax ? ` <span class="sub" style="color:#b45309;font-weight:700">· ${pMax}% 페이백</span>` : ''}<br>${list.map((t) => badgeHtml(t.name)).join('')}</div></a>`);
   }
   const cards = [];
   for (const r of rows) { const sh = await store.shopById(r.shop); if (sh) cards.push(`<a class="ca" href="/w/${sh.id}"><div class="card"><b>${esc(sh.name)}</b><br><span class="price">${pts(r.points)}</span></div></a>`); }
@@ -1670,7 +1681,7 @@ route('GET', /^\/w\/([\w-]+)$/, async (req, res, m) => {
   const bal = await store.shopPoints(u.id, shop.id);
   const pending = (await store.userShopCharges(u.id, shop.id)).filter((c) => Date.now() <= c.created + CHARGE_TTL);
   const log = await store.ledgerForUserShop(u.id, shop.id);
-  const label = { charge: '충전', buy: '구매', admin: '상점 조정' };
+  const label = { charge: '충전', buy: '구매', admin: '상점 조정', payback: '페이백' };
   send(res, 200, page(shop.name + ' 포인트', `<a class="sub" href="/s/${shop.id}">← ${esc(shop.name)}</a><h1>💰 ${esc(shop.name)} 포인트</h1>
 ${q.get('m') ? `<p class="card">${esc(q.get('m'))}</p>` : ''}${q.get('e') ? `<p class="warn">${esc(q.get('e'))}</p>` : ''}
 <div class="card"><span class="sub">보유 포인트 (1P = 1원 · 이 상점에서만 사용)</span><br><span class="price" style="font-size:28px">${pts(bal)}</span></div>
@@ -1685,7 +1696,7 @@ ${pending.map((c) => `<div class="card"><b>입금해 주세요</b><br>${esc(shop
 <form method="post" action="/w/${shop.id}/charge/${c.token}/cancel"><button style="background:#6b7280">신청 취소</button></form></div>`).join('')}
 ${pending.length ? '<script>setTimeout(function(){location.reload()},20000)</script>' : ''}
 <h2>내역</h2>
-${log.map((l) => `<div class="card"><span class="sub">${fmtDate(l.created)}</span><br>${l.kind === 'buy' ? `<a href="/o/${esc(l.ref)}">${esc(label.buy)} · ${esc(l.note)}</a>` : `${esc(label[l.kind] || l.kind)}${l.note && l.kind === 'admin' ? ' · ' + esc(l.note) : ''}`} <b>${l.delta > 0 ? '+' : ''}${Number(l.delta).toLocaleString('ko-KR')}P</b></div>`).join('') || '<p class="sub">아직 내역이 없어요</p>'}`));
+${log.map((l) => `<div class="card"><span class="sub">${fmtDate(l.created)}</span><br>${l.kind === 'buy' ? `<a href="/o/${esc(l.ref)}">${esc(label.buy)} · ${esc(l.note)}</a>` : `${esc(label[l.kind] || l.kind)}${l.note && (l.kind === 'admin' || l.kind === 'payback') ? ' · ' + esc(l.note) : ''}`} <b>${l.delta > 0 ? '+' : ''}${Number(l.delta).toLocaleString('ko-KR')}P</b></div>`).join('') || '<p class="sub">아직 내역이 없어요</p>'}`));
 });
 
 route('POST', /^\/w\/([\w-]+)\/charge$/, async (req, res, m) => {
@@ -1787,11 +1798,12 @@ route('POST', /^\/m\/([\w-]+)\/titles$/, async (req, res, m) => {
   if ((await store.titlesByShop(shop.id)).length >= 10) return back('칭호는 상점당 10개까지 만들 수 있어요');
   const dsc = Math.max(0, Math.min(20, parseInt(f.discount, 10) || 0));
   const autoMin = Math.max(0, Math.min(100000000, parseInt(f.auto_min, 10) || 0));
-  await store.createTitle({ id: rid(6), shop: shop.id, name, created: Date.now(), ...(dsc ? { discount: dsc } : {}), ...(autoMin ? { auto_min: autoMin } : {}) });
+  const pbk = Math.max(0, Math.min(20, parseInt(f.payback, 10) || 0));
+  await store.createTitle({ id: rid(6), shop: shop.id, name, created: Date.now(), ...(dsc ? { discount: dsc } : {}), ...(autoMin ? { auto_min: autoMin } : {}), ...(pbk ? { payback: pbk } : {}) });
   redirect(res, `/m/${shop.key}`);
 });
 
-route('POST', /^\/m\/([\w-]+)\/titles\/([\w-]+)\/(grant|revoke|delete|discount|auto)$/, async (req, res, m) => {
+route('POST', /^\/m\/([\w-]+)\/titles\/([\w-]+)\/(grant|revoke|delete|discount|auto|payback)$/, async (req, res, m) => {
   const shop = await manageShop(req, res, m[1]);
   if (!shop) return;
   const t = await store.titleById(m[2]);
@@ -1799,6 +1811,7 @@ route('POST', /^\/m\/([\w-]+)\/titles\/([\w-]+)\/(grant|revoke|delete|discount|a
   const f = await readForm(req);
   const back = (msg) => send(res, 400, page('오류', `<h1>${esc(msg)}</h1><p><a href="/m/${shop.key}">돌아가기</a></p>`));
   if (m[3] === 'delete') await store.deleteTitle(t.id);
+  else if (m[3] === 'payback') await store.updateTitle(t.id, { payback: Math.max(0, Math.min(20, parseInt(f.payback, 10) || 0)) });
   else if (m[3] === 'auto') await store.updateTitle(t.id, { auto_min: Math.max(0, Math.min(100000000, parseInt(f.auto_min, 10) || 0)) });
   else if (m[3] === 'discount') await store.updateTitle(t.id, { discount: Math.max(0, Math.min(20, parseInt(f.discount, 10) || 0)) });
   else if (m[3] === 'revoke') { const uid = str(f.uid, 12); if (/^[\w-]{8,12}$/.test(uid)) await store.revokeTitle(uid, t.id); }
