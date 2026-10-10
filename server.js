@@ -1639,11 +1639,20 @@ route('GET', /^\/wallet$/, async (req, res) => {
   if (!u) return redirect(res, '/login?next=/wallet');
   const rows = await store.userShopPoints(u.id);
   const titles = await store.userTitles(u.id);
+  const byShop = new Map();
+  for (const t of titles) { if (!byShop.has(t.shop)) byShop.set(t.shop, []); byShop.get(t.shop).push(t); }
+  const titleRows = [];
+  for (const [sid, list] of byShop) {
+    const sh = await store.shopById(sid);
+    if (!sh || sh.deleted) continue;
+    const dMax = Math.max(0, ...list.map((t) => Math.min(20, Number(t.discount) || 0)));
+    titleRows.push(`<div style="padding:8px 0;border-top:1px solid #f0f0f0"><a href="/s/${sh.id}" style="text-decoration:none;color:inherit"><b>${esc(sh.name)}</b></a>${dMax ? ` <span class="sub" style="color:#0f766e;font-weight:700">· ${dMax}% 할인</span>` : ''}<br>${list.map((t) => badgeHtml(t.name)).join('')}</div>`);
+  }
   const cards = [];
   for (const r of rows) { const sh = await store.shopById(r.shop); if (sh) cards.push(`<a href="/w/${sh.id}" style="text-decoration:none;color:inherit"><div class="card"><b>${esc(sh.name)}</b><br><span class="price">${pts(r.points)}</span></div></a>`); }
   send(res, 200, page('내 포인트', `<a class="sub" href="/my">← 내 상점</a><h1>💰 내 포인트</h1><p class="sub">포인트는 충전한 상점에서만 쓸 수 있어요 (1P = 1원). 회원번호 <b>${esc(u.id.slice(0, 8))}</b> · 칭호를 받을 때 판매자에게 알려주세요.</p>
 <p class="sub">표시 이름: <b>${u.name ? esc(u.name) : '아직 없어요'}</b> · <a href="/account">${u.name ? '바꾸기' : '정하기'}</a><br>이름을 정해두면 칭호를 받은 상점 맨 아래 명단에 이 이름으로 보여요.</p>
-${titles.length ? `<div class="card"><b>🏷️ 내 칭호</b><br>${titles.map((t) => badgeHtml(t.name)).join('')}</div>` : ''}
+${titleRows.length ? `<div class="card"><b>🏷️ 내 칭호</b>${titleRows.join('')}</div>` : ''}
 <h2>상점별 포인트</h2>
 ${cards.join('') || '<p class="sub">아직 충전한 상점이 없어요. 상점 페이지에서 포인트를 충전해 보세요.</p>'}`));
 });
