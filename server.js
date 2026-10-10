@@ -240,6 +240,9 @@ const sbStore = {
     const o = (await sbGet('orders', `token=eq.${enc(t)}&select=*`))[0];
     return o && { token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered, buyer: o.buyer };
   },
+  async buyerOrders(itemId, uid) {
+    return (await sbGet('orders', `item=eq.${enc(itemId)}&buyer=eq.${enc(uid)}&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered, buyer: o.buyer }));
+  },
   async ordersForItems(ids) {
     if (!ids.length) return [];
     return (await sbGet('orders', `item=in.(${ids.map(enc).join(',')})&select=*`)).map((o) => ({ token: o.token, item: o.item, price: o.price, paidAt: o.paid_at, delivered: o.delivered, buyer: o.buyer }));
@@ -374,6 +377,7 @@ const fileStore = {
   async createOrder(o) { const d = load(); d.orders[o.token] = o; save(d); },
   async orderByToken(t) { return load().orders[t]; },
   async ordersForItems(ids) { return Object.values(load().orders).filter((o) => ids.includes(o.item)); },
+  async buyerOrders(itemId, uid) { return Object.values(load().orders).filter((o) => o.item === itemId && o.buyer === uid); },
 };
 // 재고: 줄바꿈으로 한 줄에 하나. 빈 줄은 무시
 const stockLines = (t) => String(t == null ? '' : t).split('\n').map((x) => x.trim()).filter(Boolean);
@@ -560,13 +564,13 @@ var h=location.hash.slice(1),s='';try{s=sessionStorage.getItem(K)||''}catch(e){}
 <script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script></body></html>`;
 };
 
-const pointsBlock = (item, me, bal, shop, disc = 0) => {
+const pointsBlock = (item, me, bal, shop, disc = 0, remain = null) => {
   const price = Math.floor(Number(item.price) * (100 - disc) / 100);
   const canCharge = !!(shop.bank && shop.account && shop.holder);
   const nextUrl = '/i/' + item.id;
   if (!me) return `<a class="bb" href="/login?next=${enc(nextUrl)}">로그인하고 구매하기</a>`;
   const multi = item.stock != null;
-  const max = multi ? Math.max(1, Math.min(MAX_QTY, stockLines(item.stock).length)) : 1;
+  const max = multi ? Math.max(1, Math.min(MAX_QTY, stockLines(item.stock).length, remain == null ? MAX_QTY : Math.max(1, remain))) : 1;
   const chargeLink = canCharge ? `<a href="/w/${shop.id}">충전하기</a>` : '(이 상점은 아직 충전을 받지 않아요)';
   return `<form method="post" action="/i/${item.id}/buy" id="bf">
 ${multi ? `<div class="qt"><span style="font-weight:600">수량</span><div class="st"><button type="button" id="mi" aria-label="하나 빼기">−</button><input id="q" name="qty" type="number" inputmode="numeric" min="1" max="${max}" value="1"><button type="button" id="pl" aria-label="하나 더하기">+</button></div></div>
@@ -1022,6 +1026,12 @@ async function restoreLines(itemId, lines) {
 // 한 주문에 지급된 개수 (재고형은 지급된 줄 수, 그 외 1)
 const orderQty = (o) => (o && o.delivered ? Math.max(1, stockLines(o.delivered).length) : 1);
 const MAX_QTY = 50;
+// 인당 구매 한도: items.buy_limit (비어 있거나 0이면 제한 없음). 한 사람이 이 상품을 평생 최대 N개까지
+const LIMIT_SQL = 'alter table items add column if not exists buy_limit integer;';
+const parseLimit = (v) => { const n = parseInt(v, 10); return n >= 1 ? Math.min(n, 100000) : 0; };
+const itemLimit = (item) => Math.max(0, parseInt(item && item.buy_limit, 10) || 0);
+const boughtCount = async (item, uid) => (uid ? (await store.buyerOrders(item.id, uid)).reduce((a, o) => a + orderQty(o), 0) : 0);
+const buyLocks = new Set(); // 같은 사람이 같은 상품을 동시에 두 번 누르는 것 방지
 
 // 주문 생성 + 재고형 아이템이면 한 줄을 꺼내 구매자에게 지급
 async function placeOrder(order, item) {
@@ -1581,12 +1591,13 @@ ${recent.map((o) => { const bc = o.buyer ? String(o.buyer).slice(0, 8) : ''; ret
 <textarea name="preview" placeholder="미리보기 (결제 전 공개되는 설명)" required></textarea>
 <textarea name="secret" placeholder="잠금 정보 (결제 후에만 공개: 내용, 링크 등). 재고를 쓰면 비워도 돼요"></textarea>
 <textarea name="stock" placeholder="재고 (선택). 한 줄에 하나씩 적으면 구매할 때마다 한 줄씩 순서대로 지급돼요. 예) 치킨버거 ⏎ 불고기버거. 비우면 재고 제한 없이 같은 잠금 정보를 보여줘요"></textarea>
+<input name="buy_limit" type="number" inputmode="numeric" min="1" max="100000" placeholder="인당 구매 한도 (선택, 한 사람이 살 수 있는 최대 개수)">
 ${imgField('')}
 ${titleSelect(titles, '')}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" checked style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
 <button>등록</button></form>
 <h2>내 아이템</h2>
-${items.map((i) => `<div class="card">${i.image ? `<img src="/img/${i.id}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:12px;float:right;margin-left:10px">` : ''}<b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}${i.stock != null ? ` · 재고 ${stockLines(i.stock).length}개` : ''}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a><br><a href="/m/${shop.key}/items/${i.id}/edit">✏️ 수정·삭제</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
+${items.map((i) => `<div class="card">${i.image ? `<img src="/img/${i.id}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:12px;float:right;margin-left:10px">` : ''}<b>${esc(i.title)}</b> <span class="price">${won(i.price)}</span> <span class="sub">· ${i.pub ? '공개' : '비공개(링크로만)'}${i.stock != null ? ` · 재고 ${stockLines(i.stock).length}개` : ''}${itemLimit(i) ? ` · 인당 ${itemLimit(i)}개` : ''}</span><br><a href="/i/${i.id}">${BASE}/i/${i.id}</a><br><a href="/m/${shop.key}/items/${i.id}/edit">✏️ 수정·삭제</a></div>`).join('') || '<p class="sub">아직 없어요</p>'}`));
 });
 
 route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
@@ -1602,7 +1613,13 @@ route('POST', /^\/m\/([\w-]+)\/items$/, async (req, res, m) => {
   if (stock) item.stock = stock;
   const img = cleanImage(f.image); if (img) item.image = img;
   if (f.title_id) { const t = await store.titleById(String(f.title_id)); if (t && t.shop === shop.id) item.title_id = t.id; }
-  await store.createItem(item);
+  const bl = parseLimit(f.buy_limit); if (bl) item.buy_limit = bl;
+  try { await store.createItem(item); }
+  catch (e) {
+    if (!bl) throw e;
+    console.error('구매 한도 저장 실패 (items.buy_limit 칸이 있나요?)', e.message);
+    return send(res, 500, page('저장 실패', `<h1>⚠️ 저장하지 못했어요</h1><p class="warn">데이터베이스에 구매 한도 칸이 아직 없는 것 같아요. Supabase SQL Editor에서 <code>${LIMIT_SQL}</code> 를 한 번 실행한 뒤 다시 등록해 주세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
+  }
   redirect(res, `/m/${shop.key}`);
 });
 
@@ -1623,6 +1640,8 @@ ${sold ? `<p class="warn">이미 ${sold}건 팔렸어요. 가격을 바꿔도 �
 <textarea name="secret" placeholder="잠금 정보 (재고를 쓰면 비워도 돼요)">${esc(item.secret)}</textarea>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="use_stock" ${item.stock != null ? 'checked' : ''} style="width:auto;margin:0"> 재고 사용 (한 줄에 하나, 구매할 때마다 순서대로 지급)</label>
 <textarea name="stock" placeholder="남은 재고 (한 줄에 하나)">${esc(item.stock || '')}</textarea>
+<input name="buy_limit" type="number" inputmode="numeric" min="1" max="100000" value="${itemLimit(item) || ''}" placeholder="인당 구매 한도 (비우면 제한 없음)">
+<p class="sub" style="margin:-6px 0 10px">한 사람이 이 상품을 살 수 있는 최대 개수예요 (지금까지 산 개수 포함). 한도가 있는 상품은 포인트로만 살 수 있어요.</p>
 ${imgField(item.image ? item.id : '')}
 ${titleSelect(titles, item.title_id)}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px"><input type="checkbox" name="pub" ${item.pub ? 'checked' : ''} style="width:auto;margin:0"> 상점 목록에 공개 (끄면 링크로만 열려요)</label>
@@ -1651,7 +1670,14 @@ route('POST', /^\/m\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m) => {
   let tid = null;
   if (f.title_id) { const t = await store.titleById(String(f.title_id)); if (t && t.shop === shop.id) tid = t.id; }
   if (tid || item.title_id) upd.title_id = tid;
-  await store.updateItem(item.id, upd);
+  const bl = parseLimit(f.buy_limit);
+  if (bl) upd.buy_limit = bl; else if (item.buy_limit != null) upd.buy_limit = null;
+  try { await store.updateItem(item.id, upd); }
+  catch (e) {
+    if (!bl) throw e;
+    console.error('구매 한도 저장 실패 (items.buy_limit 칸이 있나요?)', e.message);
+    return send(res, 500, page('저장 실패', `<h1>⚠️ 저장하지 못했어요</h1><p class="warn">데이터베이스에 구매 한도 칸이 아직 없는 것 같아요. Supabase SQL Editor에서 <code>${LIMIT_SQL}</code> 를 한 번 실행한 뒤 다시 저장해 주세요.</p><p><a href="/m/${shop.key}">← 상점 관리로</a></p>`));
+  }
   redirect(res, `/m/${shop.key}`);
 });
 
@@ -1741,6 +1767,7 @@ route('POST', /^\/i\/([\w-]+)\/deposit$/, async (req, res, m) => {
   if (!shop || !shop.bank || !shop.account) return send(res, 400, page('오류', '<h1>이 상점은 계좌 입금을 받지 않아요</h1>'));
   if (isBlocked(shop, dUser.id)) return send(res, 403, page('이용 제한', `<h1>🚫 ${BLOCKED_MSG}</h1>`));
   if (!(await licenseOk(shop))) return send(res, 403, page('이용 불가', `<h1>⛔ ${NO_LICENSE_MSG}</h1>`));
+  if (itemLimit(item)) return send(res, 400, page('포인트 전용', `<h1>인당 구매 한도가 있는 상품이에요</h1><p class="sub">한도가 있는 상품은 상점 포인트로만 살 수 있어요.</p><p><a href="/i/${item.id}">돌아가기</a></p>`));
   if (item.stock != null && !stockLines(item.stock).length) return send(res, 400, page('품절', `<h1>품절이에요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
   const f = await readForm(req);
   const name = str(f.name, 20);
@@ -1780,7 +1807,7 @@ route('GET', /^\/claim\/([\w-]+)$/, async (req, res, m) => {
 });
 
 // 이 상점 포인트로 구매 (재고형 아이템은 qty개를 한 번에)
-route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
+const buyHandler = async (req, res, m) => {
   const u = await currentUser(req);
   if (!u) return redirect(res, '/login?next=' + enc('/i/' + m[1]));
   const item = await store.itemById(m[1]);
@@ -1794,6 +1821,11 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   let qty = multi ? parseInt(f.qty, 10) : 1;
   if (!(qty >= 1)) qty = 1;
   if (qty > MAX_QTY) return send(res, 400, page('수량 초과', `<h1>한 번에 최대 ${MAX_QTY}개까지 살 수 있어요</h1><p><a href="/i/${item.id}">돌아가기</a></p>`));
+  const limB = itemLimit(item);
+  if (limB) {
+    const have = await boughtCount(item, u.id);
+    if (have + qty > limB) return send(res, 400, page('구매 한도', `<h1>🛑 인당 구매 한도를 넘어요</h1><p class="sub">이 상품은 한 사람이 ${limB}개까지 살 수 있어요. 지금까지 ${have}개 샀고, ${Math.max(0, limB - have)}개 더 살 수 있어요.</p><p><a href="/i/${item.id}">돌아가기</a></p>`));
+  }
   const discB = await discountOf(u.id, item.shop);
   const unit = discPrice(item.price, discB);
   const total = unit * qty;
@@ -1840,6 +1872,13 @@ route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
   await notify(shopN, `💰 새 주문! ${item.title}${qty > 1 ? ` × ${qty}` : ''} (${won(total)})`, 'sale', saleVars(shopN, item, total, qty));
   if (soldLast) await notify(shopN, `📦 재고가 0이 됐어요: ${item.title}. 재고를 채워주세요.`, 'stock', { item: item.title, shop: shopN ? shopN.name : '', link: BASE + '/i/' + item.id });
   redirect(res, `/o/${order.token}`);
+};
+route('POST', /^\/i\/([\w-]+)\/buy$/, async (req, res, m) => {
+  const u = await currentUser(req);
+  const k = (u ? u.id : '') + '|' + m[1];
+  if (u && buyLocks.has(k)) return send(res, 429, page('처리 중', `<h1>처리 중이에요</h1><p class="sub">이미 구매를 처리하고 있어요. 잠시 뒤에 내 구매 내역을 확인해 주세요.</p><p><a href="/i/${esc(m[1])}">돌아가기</a></p>`));
+  if (u) buyLocks.add(k);
+  try { return await buyHandler(req, res, m); } finally { buyLocks.delete(k); }
 });
 
 // 내 포인트 · 칭호 (상점별 목록)
@@ -2355,12 +2394,16 @@ route('GET', /^\/i\/([\w-]+)$/, async (req, res, m) => {
   const disc = blockedMe ? 0 : await discountOf(me && me.id, shop.id);
   const left = item.stock != null ? stockLines(item.stock).length : null;
   const stockTxt = left == null ? '무제한' : left ? `${left}개` : '품절';
+  const lim = itemLimit(item);
+  const haveN = lim && me ? await boughtCount(item, me.id) : 0;
+  const remain = lim ? Math.max(0, lim - haveN) : null;
   const body = `<a class="sm" style="text-decoration:none" href="/s/${shop.id}">← ${esc(shop.name)}</a>
 <div class="pc" style="margin-top:12px"><div class="im" style="aspect-ratio:4/3"><img src="${item.image ? `/img/${item.id}` : `/default-product.jpg?v=${ICON_VER}`}" alt=""></div><div class="pb"><h2>${esc(item.title)}</h2>
 <div class="rt">${ICO.star}<span>${reviews.length ? avg.toFixed(1) : '-'}</span>${reviews.length ? `<span class="sm">(${reviews.length})</span>` : ''}<span class="sm" style="margin-left:auto">판매 ${sold}건</span></div>
 <div class="pr">${disc ? `<span><s class="sm">${won(item.price)}</s> <b>${won(discPrice(item.price, disc))}</b> <span class="sm">(${disc}% 할인)</span></span>` : `<b>${won(item.price)}</b>`}<span>재고: <b>${stockTxt}</b></span></div></div></div>
 ${item.preview ? `<div class="bx" style="white-space:pre-wrap">${esc(item.preview)}</div>` : ''}
-${left === 0 ? '<div class="nt">😢 품절이에요</div>' : !licOk ? '<div class="nt">⛔ 지금은 판매가 중단된 상점이에요</div>' : blockedMe ? `<div class="nt">🚫 ${BLOCKED_MSG}</div>` : pointsBlock(item, me, bal, shop, disc)}
+${lim ? `<div class="nt">🛒 인당 ${lim}개까지 살 수 있어요${me ? ` (내가 산 개수 ${haveN}개 · 남은 ${remain}개)` : ''}</div>` : ''}
+${left === 0 ? '<div class="nt">😢 품절이에요</div>' : !licOk ? '<div class="nt">⛔ 지금은 판매가 중단된 상점이에요</div>' : blockedMe ? `<div class="nt">🚫 ${BLOCKED_MSG}</div>` : remain === 0 ? '<div class="nt">🛑 인당 구매 한도에 도달해서 더 살 수 없어요</div>' : pointsBlock(item, me, bal, shop, disc, remain)}
 <p style="margin:14px 0 0"><a class="sm" href="/s/${shop.id}/inquiry?item=${item.id}">💬 이 상품 문의하기</a></p>
 <h3 style="font-size:20px;margin:30px 0 10px">⭐ 후기 ${reviews.length ? `${avg.toFixed(1)} (${reviews.length})` : ''}</h3>
 ${reviews.map((r) => `<div class="bx">${stars(r.rating)} <span class="sm">구매자 ${esc(r.user_id.slice(0, 4))} · ${new Date(Number(r.created)).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' })}</span><br><span style="white-space:pre-wrap">${esc(r.body)}</span>${canMod ? `<form method="post" action="/i/${item.id}/reviews/${r.id}/delete" onsubmit="return confirm('이 후기를 삭제할까요?')"><button class="bb" style="background:#dc2626;margin-top:10px;padding:12px;font-size:15px">후기 삭제</button></form>` : ''}</div>`).join('') || '<p class="sm">아직 후기가 없어요. 구매한 사람이 남길 수 있어요.</p>'}`;
